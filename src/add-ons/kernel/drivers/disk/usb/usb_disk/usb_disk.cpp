@@ -429,9 +429,14 @@ usb_disk_operation_bulk(device_lun *lun, uint8 *operation, size_t operationLengt
 
 	disk_device *device = lun->device;
 	usb_massbulk_command_block_wrapper command;
-	command.signature = USB_MASSBULK_CBW_SIGNATURE;
-	command.tag = device->current_tag++;
-	command.data_transfer_length = (dataLength != NULL ? *dataLength : 0);
+	// The command/status wrappers are little-endian on the wire (USB Mass
+	// Storage Bulk-Only Transport); swap the 32-bit fields so they are correct
+	// on a big-endian host (ppc). Without this the device sees a garbage CBW
+	// signature and stalls every transfer.
+	uint32 transferLength = (dataLength != NULL ? *dataLength : 0);
+	command.signature = B_HOST_TO_LENDIAN_INT32(USB_MASSBULK_CBW_SIGNATURE);
+	command.tag = B_HOST_TO_LENDIAN_INT32(device->current_tag++);
+	command.data_transfer_length = B_HOST_TO_LENDIAN_INT32(transferLength);
 	command.flags = (directionIn ? USB_MASSBULK_CBW_DATA_INPUT
 		: USB_MASSBULK_CBW_DATA_OUTPUT);
 	command.lun = lun->logical_unit_number;
@@ -491,7 +496,7 @@ usb_disk_operation_bulk(device_lun *lun, uint8 *operation, size_t operationLengt
 		return result;
 	}
 
-	if (status.signature != USB_MASSBULK_CSW_SIGNATURE
+	if (B_LENDIAN_TO_HOST_INT32(status.signature) != USB_MASSBULK_CSW_SIGNATURE
 		|| status.tag != command.tag) {
 		// the command status wrapper is not valid
 		TRACE_ALWAYS("command status wrapper is not valid: %#" B_PRIx32 "\n",
@@ -506,7 +511,7 @@ usb_disk_operation_bulk(device_lun *lun, uint8 *operation, size_t operationLengt
 		{
 			// The residue from "status.data_residue" is not maintained
 			// correctly by some devices, so calculate it instead.
-			uint32 residue = command.data_transfer_length - transferedData;
+			uint32 residue = transferLength - transferedData;
 
 			if (dataLength != NULL) {
 				*dataLength -= residue;

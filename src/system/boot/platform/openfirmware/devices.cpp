@@ -106,10 +106,39 @@ platform_add_boot_device(struct stage2_args *args, NodeList *devicesList)
 	// state where a *second* open of the same underlying device (e.g.
 	// the one platform_add_block_devices() does moments later while
 	// scanning for partitions) hangs indefinitely instead of failing.
-	// So don't attempt to open the boot device here at all; just defer
-	// entirely to the scan in platform_add_block_devices(), which finds
-	// and opens every block device - including this one - itself.
-	return B_ENTRY_NOT_FOUND;
+	//
+	// But we CAN open the plain device: strip the ":<partition>,\\file"
+	// argument off and open it the same way platform_add_block_devices()
+	// does below (with the Apple ":0" disk-label bypass). Adding the boot
+	// disk here lets the loader boot straight from it, so it never has to
+	// fall back to scanning *every* block device - that scan of_open()s each
+	// device in turn and hangs indefinitely on some firmware when it reaches
+	// an empty optical drive (e.g. the iBook G4's empty combo drive).
+	char devicePath[192];
+	strlcpy(devicePath, sBootPath, sizeof(devicePath));
+	char *argument = strchr(devicePath, ':');
+	if (argument != NULL)
+		argument[0] = '\0';
+
+	char openPath[200];
+	strlcpy(openPath, devicePath, sizeof(openPath));
+	if (gMachine & MACHINE_MAC)
+		strlcat(openPath, ":0", sizeof(openPath));
+
+	intptr_t handle = of_open(openPath);
+	if (handle == OF_FAILED && (gMachine & MACHINE_MAC))
+		handle = of_open(devicePath);
+	if (handle == OF_FAILED) {
+		// couldn't open the boot disk directly; defer to the full scan
+		return B_ENTRY_NOT_FOUND;
+	}
+
+	Handle *device = new(nothrow) Handle(handle);
+	if (device == NULL)
+		return B_NO_MEMORY;
+	printf("opened boot disk directly: %s\n", openPath);
+	devicesList->Add(device);
+	return B_OK;
 }
 
 
@@ -117,15 +146,21 @@ status_t
 platform_get_boot_partitions(struct stage2_args *args, Node *device,
 	NodeList *list, NodeList *partitionList)
 {
+	// Offer every partition on the boot disk as a boot-partition candidate;
+	// get_boot_file_system() then mounts each in turn and keeps the one that is
+	// a valid Haiku boot volume. Taking only the first partition failed on an
+	// Apple Partition Map disk, whose first entry is the partition map itself
+	// (not a file system) - the loader then gave up and fell back to scanning
+	// every device, which hangs on an empty optical drive on some firmware.
 	NodeIterator iterator = list->GetIterator();
 	boot::Partition *partition = NULL;
+	status_t status = B_ENTRY_NOT_FOUND;
 	while ((partition = (boot::Partition *)iterator.Next()) != NULL) {
-		// ToDo: just take the first partition for now
 		partitionList->Insert(partition);
-		return B_OK;
+		status = B_OK;
 	}
 
-	return B_ENTRY_NOT_FOUND;
+	return status;
 }
 
 
