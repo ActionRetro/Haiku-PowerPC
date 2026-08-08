@@ -39,6 +39,7 @@ public:
 			status_t			SendReport(HIDReport *report);
 
 			HIDParser &			Parser() { return fParser; }
+			bool				IsAppleTouch() { return fIsAppleTouch; }
 			ProtocolHandler *	ProtocolHandlerAt(uint32 index) const;
 
 			// only to be used for the kernel debugger information
@@ -55,6 +56,7 @@ private:
 private:
 			status_t			fStatus;
 			usb_device			fDevice;
+			bool				fIsAppleTouch;
 			usb_pipe			fInterruptPipe;
 			size_t				fInterfaceIndex;
 			uint8				fEndpointAddress;

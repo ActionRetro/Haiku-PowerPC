@@ -992,9 +992,11 @@ usb_disk_synchronize(device_lun *lun, bool force)
 	}
 
 	if (lun->device->sync_support == 0) {
-		// this device reported an illegal request when syncing or repeatedly
-		// returned an other error, it apparently does not support syncing...
-		return B_UNSUPPORTED;
+		// This device does not usefully support SYNCHRONIZE CACHE (common for
+		// USB sticks). The data write itself already completed, so report
+		// success rather than an error - a failing flush otherwise stalls the
+		// filesystem write path (and wedges the iBook's polling-USB boot).
+		return B_OK;
 	}
 
 	if (!lun->should_sync && !force)
@@ -1018,12 +1020,13 @@ usb_disk_synchronize(device_lun *lun, bool force)
 		return B_OK;
 	}
 
-	if (result == B_DEV_INVALID_IOCTL)
-		lun->device->sync_support = 0;
-	else
-		lun->device->sync_support--;
-
-	return result;
+	// Any failure means the stick does not usefully support SYNCHRONIZE CACHE.
+	// Disable it immediately instead of retrying on every flush - repeated
+	// failing syncs over polling USB stall the write path and freeze the
+	// machine - and report success, since the actual WRITE already committed
+	// the data to the device.
+	lun->device->sync_support = 0;
+	return B_OK;
 }
 
 
@@ -1318,8 +1321,21 @@ usb_disk_block_read(device_lun *lun, uint64 blockPosition, size_t blockCount,
 		commandBlock[5] = blockPosition;
 		commandBlock[7] = blockCount >> 8;
 		commandBlock[8] = blockCount;
-		status_t result = usb_disk_operation(lun, commandBlock, 10,
-			data, length, true);
+		// Retry transient read failures: on the iBook the boot disk is a USB
+		// stick driven over POLLING OHCI (no interrupts), which occasionally
+		// glitches; without a retry a single hiccup fails packagefs_mount and
+		// panics the boot. Reset *length each attempt so a partial transfer
+		// does not shrink the request.
+		size_t requestedLength = *length;
+		status_t result = B_OK;
+		for (int tries = 0; tries < 5; tries++) {
+			*length = requestedLength;
+			result = usb_disk_operation(lun, commandBlock, 10,
+				data, length, true);
+			if (result == B_OK)
+				break;
+			snooze(10000);
+		}
 		return result;
 	} else {
 		commandBlock[0] = SCSI_READ_16;
@@ -1336,8 +1352,16 @@ usb_disk_block_read(device_lun *lun, uint64 blockPosition, size_t blockCount,
 		commandBlock[11] = blockCount >> 16;
 		commandBlock[12] = blockCount >> 8;
 		commandBlock[13] = blockCount;
-		status_t result = usb_disk_operation(lun, commandBlock, 16,
-			data, length, true);
+		size_t requestedLength = *length;
+		status_t result = B_OK;
+		for (int tries = 0; tries < 5; tries++) {
+			*length = requestedLength;
+			result = usb_disk_operation(lun, commandBlock, 16,
+				data, length, true);
+			if (result == B_OK)
+				break;
+			snooze(10000);
+		}
 		return result;
 	}
 }

@@ -19,6 +19,7 @@
 #include "KeyboardProtocolHandler.h"
 #include "MouseProtocolHandler.h"
 #include "TabletProtocolHandler.h"
+#include "AppleTouchProtocolHandler.h"
 
 
 ProtocolHandler::ProtocolHandler(HIDDevice *device, const char *basePath,
@@ -98,6 +99,12 @@ ProtocolHandler::AddHandlers(HIDDevice &device, ProtocolHandler *&handlerList,
 		MouseProtocolHandler::AddHandlers(device, *collection, handlerList);
 		TabletProtocolHandler::AddHandlers(device, *collection, handlerList);
 	}
+
+	// Apple Geyser trackpads have only a Physical top-level collection and are
+	// missed by the Application-collection loop above; handle from the root.
+	if (device.IsAppleTouch())
+		AppleTouchProtocolHandler::AddHandlers(device, *rootCollection,
+			handlerList);
 
 	handlerCount = 0;
 	ProtocolHandler *handler = handlerList;
