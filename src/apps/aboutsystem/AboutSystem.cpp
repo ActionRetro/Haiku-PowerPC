@@ -75,6 +75,8 @@
 #include "HyperTextView.h"
 #include "Utilities.h"
 
+#include "TabbyVersion.h"
+
 #include "Credits.h"
 
 
@@ -393,7 +395,11 @@ AboutApp::MessageReceived(BMessage* message)
 AboutWindow::AboutWindow()
 	:
 	BWindow(BRect(0, 0, kWindowWidth, kWindowHeight),
+		#ifdef HAIKU_DISTRO_COMPATIBILITY_COMPATIBLE
+		B_TRANSLATE("About Tabby"), B_TITLED_WINDOW,
+#else
 		B_TRANSLATE("About this system"), B_TITLED_WINDOW,
+#endif
 		B_AUTO_UPDATE_SIZE_LIMITS | B_NOT_ZOOMABLE)
 {
 	SetLayout(new BGroupLayout(B_VERTICAL, 0));
@@ -982,46 +988,75 @@ SysInfoView::_BaseHeight()
 BString
 SysInfoView::_GetOSVersion()
 {
-	BString revision;
-	// add system revision to os version
+	// Tabby version line: the release version (from TabbyVersion.h) plus an
+	// automatic build number. The build number is taken from the git-based
+	// Haiku revision baked in at build time ("hrevNNNNN+C+dirty"), where C is
+	// the commit count since the base Haiku hrev tag - i.e. Tabby's own commits
+	// on top of Haiku. A trailing '+' means the tree had uncommitted changes.
+	BString build;
+	bool dirty = false;
 	const char* hrev = __get_haiku_revision();
-	if (hrev != NULL)
-		revision.SetToFormat(B_TRANSLATE_COMMENT("Version: %s",
-			"Version: R1 or hrev99999"), hrev);
-	else
-		revision = B_TRANSLATE("Version:");
+	if (hrev != NULL && hrev[0] != '\0') {
+		BString rev(hrev);
+		dirty = rev.FindFirst("+dirty") >= 0;
+		int32 first = rev.FindFirst('+');
+		if (first > 0) {
+			int32 second = rev.FindFirst('+', first + 1);
+			int32 end = second > 0 ? second : rev.Length();
+			rev.CopyInto(build, first + 1, end - first - 1);
+			// keep it only if it is a plain commit count
+			bool numeric = build.Length() > 0;
+			for (int32 i = 0; i < build.Length(); i++) {
+				if (build[i] < '0' || build[i] > '9') {
+					numeric = false;
+					break;
+				}
+			}
+			if (!numeric)
+				build.Truncate(0);
+		}
+	}
 
-	return revision;
+	BString release(TABBY_VERSION_RELEASE);
+	if (BString(TABBY_VERSION_CODENAME).Length() > 0)
+		release << " \"" TABBY_VERSION_CODENAME "\"";
+
+	BString version;
+	if (build.IsEmpty()) {
+		version.SetToFormat(B_TRANSLATE("Version: Tabby %s"), release.String());
+	} else {
+		version.SetToFormat(B_TRANSLATE("Version: Tabby %s (build %s%s)"),
+			release.String(), build.String(), dirty ? "+" : "");
+	}
+
+	return version;
 }
 
 
 BString
 SysInfoView::_GetABIVersion()
 {
-	BString abiVersion;
-
-	// the version is stored in the BEOS:APP_VERSION attribute of libbe.so
-	BPath path;
-	if (find_directory(B_BEOS_LIB_DIRECTORY, &path) == B_OK) {
-		path.Append("libbe.so");
-
-		BAppFileInfo appFileInfo;
-		version_info versionInfo;
-		BFile file;
-		if (file.SetTo(path.Path(), B_READ_ONLY) == B_OK
-			&& appFileInfo.SetTo(&file) == B_OK
-			&& appFileInfo.GetVersionInfo(&versionInfo,
-				B_APP_VERSION_KIND) == B_OK
-			&& versionInfo.short_info[0] != '\0')
-			abiVersion = versionInfo.short_info;
+	// Tabby: show which Haiku revision this build is based on, plus the ABI/arch
+	// name. The base Haiku hrev is the revision string up to the first '+'; the
+	// part after it is folded into Tabby's build number (see _GetOSVersion).
+	BString base;
+	const char* hrev = __get_haiku_revision();
+	if (hrev != NULL && hrev[0] != '\0') {
+		base = hrev;
+		int32 plus = base.FindFirst('+');
+		if (plus > 0)
+			base.Truncate(plus);
 	}
 
-	if (abiVersion.IsEmpty())
-		abiVersion = B_TRANSLATE("Unknown");
+	BString basedOn;
+	if (base.IsEmpty())
+		basedOn = B_TRANSLATE("Based on Haiku");
+	else
+		basedOn.SetToFormat(B_TRANSLATE("Based on Haiku %s"), base.String());
 
-	abiVersion << " (" << B_HAIKU_ABI_NAME << ")";
+	basedOn << " (" << B_HAIKU_ABI_NAME << ")";
 
-	return abiVersion;
+	return basedOn;
 }
 
 
@@ -1562,7 +1597,13 @@ AboutView::_CreateCreditsView()
 	fCreditsView->SetFontAndColor(be_plain_font, B_FONT_ALL, &fTextColor);
 	fCreditsView->Insert(B_TRANSLATE(
 		".\nThe Tabby Maintainers are not associated with the Haiku "
-		"project.\n\nThis software is work in progress and has missing "
+		"project.\n\nFor information and support, please visit the "));
+	fCreditsView->SetFontAndColor(be_plain_font, B_FONT_ALL, &fLinkColor);
+	fCreditsView->InsertHyperText("Tabby GitHub repository",
+		new URLAction("https://github.com/ActionRetro/Haiku-PowerPC"));
+	fCreditsView->SetFontAndColor(be_plain_font, B_FONT_ALL, &fTextColor);
+	fCreditsView->Insert(B_TRANSLATE(
+		".\n\nThis software is work in progress and has missing "
 		"functionality as well as many bugs.\n\n"));
 #endif
 
