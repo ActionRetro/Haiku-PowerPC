@@ -813,11 +813,14 @@ TBarApp::FetchTeamIcon(team_id team, int32 size)
 			_CacheTeamIcon(barInfo, size);
 			BBitmap* icon = barInfo->icon;
 
-			// restore icon pointer back to setting
+			// Restore the icon pointer back to the default setting size, but
+			// only if that size is already cached - otherwise we would leave
+			// barInfo->icon NULL for another thread to copy (blank icon).
 			if (size != fSettings.iconSize) {
 				int32 index = (fSettings.iconSize - kMinimumIconSize)
 					/ kIconSizeInterval;
-				barInfo->icon = barInfo->iconCache[index];
+				if (barInfo->iconCache[index] != NULL)
+					barInfo->icon = barInfo->iconCache[index];
 			}
 
 			return icon;
@@ -1053,10 +1056,16 @@ TBarApp::_CacheTeamIcon(BarTeamInfo* barInfo, int32 size)
 	// icon index based on icon size
 	const int32 index = (size - kMinimumIconSize) / kIconSizeInterval;
 
-	// first look in the icon cache
-	barInfo->icon = barInfo->iconCache[index];
-	if (barInfo->icon != NULL)
+	// First look in the icon cache. Only publish barInfo->icon when we actually
+	// have a valid bitmap: assigning the (possibly NULL) cache slot here would
+	// leave barInfo->icon transiently NULL, and another thread copying it (the
+	// window/draw thread fetching a draw-size icon while AddTeam's subscriber
+	// loop copies barInfo->icon) can catch that NULL on weakly-ordered ppc,
+	// producing an uninitialized bitmap that draws as a blank icon.
+	if (barInfo->iconCache[index] != NULL) {
+		barInfo->icon = barInfo->iconCache[index];
 		return B_OK;
+	}
 
 	int32 composed = be_control_look->ComposeIconSize(size).IntegerWidth() + 1;
 	BRect iconRect = BRect(0, 0, composed - 1, composed - 1);
