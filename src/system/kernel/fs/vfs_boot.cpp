@@ -401,24 +401,46 @@ get_boot_partitions(KMessage& bootVolume, PartitionStack& partitions)
 			BootMethod*		fBootMethod;
 	} visitor(bootMethod, partitions);
 
-	bool strict = true;
+	// The boot device may not have finished enumerating yet - most notably a
+	// USB disk on real hardware, whose usb_disk device can be published only
+	// after this point. This is masked on a "chatty" boot (the serial output
+	// delays us enough that the disk appears in time), but on a quiet boot the
+	// scan can run before the disk shows up. So if we find nothing, wait and
+	// rescan for a few seconds before giving up, instead of panicking outright.
+	const bigtime_t kBootDeviceScanTimeout = 15 * 1000000LL;	// 15 seconds
+	bigtime_t scanStart = system_time();
 
 	while (true) {
-		KDiskDevice *device;
-		int32 cookie = 0;
-		while ((device = manager->NextDevice(&cookie)) != NULL) {
-			if (!bootMethod->IsBootDevice(device, strict))
-				continue;
+		bool strict = true;
 
-			if (device->VisitEachDescendant(&visitor) != NULL)
+		while (true) {
+			KDiskDevice *device;
+			int32 cookie = 0;
+			while ((device = manager->NextDevice(&cookie)) != NULL) {
+				if (!bootMethod->IsBootDevice(device, strict))
+					continue;
+
+				if (device->VisitEachDescendant(&visitor) != NULL)
+					break;
+			}
+
+			if (!partitions.IsEmpty() || !strict)
 				break;
+
+			// we couldn't find any potential boot devices, try again less
+			// strict
+			strict = false;
 		}
 
-		if (!partitions.IsEmpty() || !strict)
+		if (!partitions.IsEmpty())
+			break;
+		if (system_time() - scanStart >= kBootDeviceScanTimeout)
 			break;
 
-		// we couldn't find any potential boot devices, try again less strict
-		strict = false;
+		// Nothing found yet: give a slow-to-appear boot device (e.g. a USB
+		// disk still enumerating) time to be published, then rescan for it.
+		snooze(250000);	// 0.25s
+		manager->InitialDeviceScan();
 	}
 
 	// sort partition list (e.g.. when booting from CD, CDs should come first in
