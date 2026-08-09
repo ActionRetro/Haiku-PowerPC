@@ -87,6 +87,14 @@ static macio_ata_supported_device sSupportedDevices[] = {
 	// boot drive lives. The two legacy ata-3 cells (0x20000/0x21000) remain for
 	// optical / media-bay devices.
 	{ 0x106b, 0x0022, 1, {{ 0x1f000, 0x13 }} },
+	// Pangea (iBook G3 "dual USB" = PowerBook4,1, iMac G3 summer 2001, eMac):
+	// a KeyLargo-derived mac-io (PCI device 0x0025, model "AAPL,Keylargo").
+	// Its OF device tree has a SINGLE ata cell, ata-4@1f000 (compatible
+	// "keylargo-ata", reg offset 0x1f000, interrupt 0x13) carrying the internal
+	// Ultra-ATA/66 hard disk - the same layout as KeyLargo. It has NO ata-3
+	// cells, so publish only ata-4; probing the absent 0x20000/0x21000 cells
+	// touches bogus mac-io registers and corrupts memory (confirmed on a G3).
+	{ 0x106b, 0x0025, 1, {{ 0x1f000, 0x13 }} },
 	{ 0, 0, 0, {} }
 };
 
@@ -116,6 +124,7 @@ struct macio_ata_channel_info {
 
 static ata_for_controller_interface*	sATA;
 static device_manager_info*				sDeviceManager;
+static bool								sControllerRegistered = false;
 
 
 static macio_ata_supported_device*
@@ -406,18 +415,34 @@ macio_ata_supports_device(device_node* parent)
 static status_t
 macio_ata_register_device(device_node* parent)
 {
+	// On some machines (notably the iBook G3) the mac-io PCI device is
+	// enumerated as several device nodes; registering our controller under each
+	// of them would create a separate ATA channel - and thus a duplicate
+	// /dev/disk/ata/N entry - for the one physical disk. There is only ever a
+	// single mac-io ATA controller, so register it exactly once.
+	if (sControllerRegistered)
+		return B_OK;
+
 	device_attr attrs[] = {
 		{ B_DEVICE_PRETTY_NAME, B_STRING_TYPE,
 			{ .string = "mac-io ATA controller" }},
 		{ ATA_CONTROLLER_CONTROLLER_NAME_ITEM, B_STRING_TYPE,
 			{ .string = "mac-io ATA" }},
-		{ ATA_CONTROLLER_MAX_DEVICES_ITEM, B_UINT8_TYPE, { .ui8 = 2 }},
+		// The mac-io ATA cells we support (KeyLargo/Pangea ata-4 internal
+		// Ultra-ATA, and the Heathrow channels dingus emulates) each carry a
+		// SINGLE master device - there is no slave. Probing a non-existent
+		// slave floods the log with endless ATAPI "timeout waiting for data
+		// request" retries (seen on the iBook G3), so only probe the master.
+		{ ATA_CONTROLLER_MAX_DEVICES_ITEM, B_UINT8_TYPE, { .ui8 = 1 }},
 		{ ATA_CONTROLLER_CAN_DMA_ITEM, B_UINT8_TYPE, { .ui8 = 0 }},
 		{}
 	};
 
-	return sDeviceManager->register_node(parent,
+	status_t status = sDeviceManager->register_node(parent,
 		MACIO_ATA_CONTROLLER_MODULE_NAME, attrs, NULL, NULL);
+	if (status == B_OK)
+		sControllerRegistered = true;
+	return status;
 }
 
 
