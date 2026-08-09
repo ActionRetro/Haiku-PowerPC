@@ -51,6 +51,16 @@ init_bus(device_node* node, void** bus_cookie)
 {
 	CALLED();
 
+#ifdef __POWERPC__
+	// EHCI (USB 2.0) is not yet big-endian ported. On ppc, refuse to bring the
+	// controller up so its ports fall through to the OHCI companion controllers
+	// (which ARE big-endian safe). This also keeps the USB explore thread from
+	// wedging on the unported EHCI and blocking driver install_notify (the 12"
+	// PowerBook G4 boot stall at "Loading usb_davicom").
+	TRACE_MODULE_ERROR("EHCI disabled on ppc (not big-endian ported)\n");
+	return B_ERROR;
+#endif
+
 	driver_module_info* driver;
 	ehci_pci_sim_info* bus;
 	device_node* parent = gDeviceManager->get_parent_node(node);

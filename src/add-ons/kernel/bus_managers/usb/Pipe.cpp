@@ -443,13 +443,26 @@ ControlPipe::SendRequest(uint8 requestType, uint8 request, uint16 value,
 	// result data was filled in. Use a 2 seconds timeout for control transfers.
 	if (acquire_sem_etc(fNotifySem, 1, B_RELATIVE_TIMEOUT, 2000000) < B_OK) {
 		TRACE_ERROR("timeout waiting for queued request to complete\n");
+		dprintf("usb: control request 0x%02x/0x%02x timed out\n",
+			requestType, request);
 
 		CancelQueuedTransfers(false);
 
-		// After the above cancel returns it is guaranteed that the callback
-		// has been invoked. Therefore we can simply grab that released
-		// semaphore again to clean up.
-		acquire_sem(fNotifySem);
+		// On x86 the cancel above guarantees the completion callback ran, so a
+		// plain acquire_sem() would reclaim the release. On ppc the OHCI/UHCI
+		// finisher is polling driven (PCI interrupts are not routed here), so
+		// the callback is NOT guaranteed to have fired yet - a bare acquire_sem
+		// would block FOREVER, wedging the USB explore thread while it holds
+		// fExploreLock and stalling the whole boot (the 12" PowerBook G4
+		// "Loading usb_davicom" hang). Wait bounded; if the callback still has
+		// not arrived, drop the notify sem so a late release can never be
+		// mistaken for the NEXT request completing (recreated lazily above).
+		if (acquire_sem_etc(fNotifySem, 1, B_RELATIVE_TIMEOUT, 1000000) < B_OK) {
+			dprintf("usb: completion callback did not fire after cancel; "
+				"resetting notify sem\n");
+			delete_sem(fNotifySem);
+			fNotifySem = -1;
+		}
 
 		if (actualLength)
 			*actualLength = 0;
