@@ -3,10 +3,13 @@ SubDir HAIKU_TOP src add-ons kernel partitioning_systems apple ;
 UsePrivateHeaders [ FDirName kernel disk_device_manager ] ;
 UsePrivateHeaders [ FDirName kernel ] ;
 UsePrivateHeaders [ FDirName storage ] ;
+UsePrivateHeaders [ FDirName shared ] ;
 UsePrivateSystemHeaders ;
 
 KernelAddon apple :
 	apple.cpp
+	apple_write_support.cpp
+	PartitionLocker.cpp
 	;
 
 #Addon <partitioning_system>apple :

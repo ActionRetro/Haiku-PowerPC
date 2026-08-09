@@ -1,0 +1,17 @@
+SubDir HAIKU_TOP src add-ons disk_systems apple ;
+
+UsePrivateHeaders shared storage ;
+UsePrivateSystemHeaders ;
+
+{
+	local defines = [ FDefines _USER_MODE ] ;
+	SubDirCcFlags $(defines) ;
+	SubDirC++Flags $(defines) ;
+}
+
+AddResources <disk_system>apple : AppleDiskAddOn.rdef ;
+
+Addon <disk_system>apple :
+	AppleDiskAddOn.cpp
+	: be shared [ TargetLibsupc++ ]
+;

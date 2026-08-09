@@ -109,6 +109,12 @@ public:
 			fIgnorePaths.insert("rr_moved");
 			fIgnorePaths.insert("boot.catalog");
 			fIgnorePaths.insert("haiku-boot-floppy.image");
+			// Tabby PowerPC live/installer-CD boot artifacts (medium only):
+			fIgnorePaths.insert("tabby-loader.hfs");
+			fIgnorePaths.insert("haikuloader.elf");
+			fIgnorePaths.insert("boot");
+			fIgnorePaths.insert("ppc");
+			fIgnorePaths.insert("hfs.map");
 			fIgnorePaths.insert("system/var/swap");
 			fIgnorePaths.insert("system/var/shared_memory");
 			fIgnorePaths.insert("system/var/log/syslog");
@@ -423,7 +429,7 @@ WorkerThread::_WriteBootSector(BPath &path)
 	BPath bootPath;
 	find_directory(B_BEOS_BOOT_DIRECTORY, &bootPath);
 	BString command;
-	command.SetToFormat("makebootable \"%s\"", path.Path());
+	command.SetToFormat("makebootable \"%s\" > /dev/dprintf 2>&1", path.Path());
 	_SetStatusMessage(B_TRANSLATE("Writing bootsector."));
 	return system(command.String());
 }
@@ -452,8 +458,12 @@ WorkerThread::_LaunchFinishScript(BPath &path)
 	if (system(command.String()) != 0)
 		return B_ERROR;
 
+	// Best-effort: remove the live-desktop Installer link from the target. Its
+	// absence (rm returns non-zero on some setups) must not fail the install,
+	// which is otherwise already complete.
 	command.SetToFormat("rm -f \"%s/home/Desktop/Installer\"", path.Path());
-	return system(command.String());
+	system(command.String());
+	return B_OK;
 }
 
 

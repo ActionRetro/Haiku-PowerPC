@@ -57,8 +57,8 @@ struct apple_partition_map {
 
 	int32 StartBlock() { return B_BENDIAN_TO_HOST_INT32(start); }
 	int32 BlockCount() { return B_BENDIAN_TO_HOST_INT32(size); }
-	uint64 Start(apple_driver_descriptor &descriptor) { return StartBlock() * descriptor.BlockSize(); }
-	uint64 Size(apple_driver_descriptor &descriptor) { return BlockCount() * descriptor.BlockSize(); }
+	uint64 Start(apple_driver_descriptor &descriptor) { return (uint64)StartBlock() * descriptor.BlockSize(); }
+	uint64 Size(apple_driver_descriptor &descriptor) { return (uint64)BlockCount() * descriptor.BlockSize(); }
 
 	bool HasValidSignature();
 };

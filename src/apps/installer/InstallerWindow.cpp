@@ -12,6 +12,12 @@
 #include <strings.h>
 
 #include <Alert.h>
+#include <DiskDevice.h>
+#include <DiskDeviceRoster.h>
+#include <Path.h>
+#include <Volume.h>
+#include <VolumeRoster.h>
+#include <stdlib.h>
 #include <Application.h>
 #include <Autolock.h>
 #include <Box.h>
@@ -58,6 +64,8 @@ static const char* kBootManagerSignature = "application/x-vnd.Haiku-BootManager"
 const uint32 BEGIN_MESSAGE = 'iBGN';
 const uint32 SHOW_BOTTOM_MESSAGE = 'iSBT';
 const uint32 LAUNCH_DRIVE_SETUP = 'iSEP';
+const uint32 SETUP_TABBY_DISK = 'iSTD';
+const uint32 SETUP_TABBY_DONE = 'iSTd';
 const uint32 LAUNCH_BOOTMAN = 'iWBM';
 const uint32 START_SCAN = 'iSSC';
 const uint32 PACKAGE_CHECKBOX = 'iPCB';
@@ -257,6 +265,12 @@ InstallerWindow::InstallerWindow()
 		B_TRANSLATE("Set up partitions" B_UTF8_ELLIPSIS),
 		new BMessage(LAUNCH_DRIVE_SETUP));
 
+#ifdef HAIKU_DISTRO_COMPATIBILITY_COMPATIBLE
+	fSetupTabbyDiskButton = new BButton("setup_tabby_button",
+		B_TRANSLATE("Set up disk for Tabby"),
+		new BMessage(SETUP_TABBY_DISK));
+#endif
+
 	fLaunchBootManagerItem = new BMenuItem(B_TRANSLATE("Set up boot menu" B_UTF8_ELLIPSIS),
 		new BMessage(LAUNCH_BOOTMAN));
 	fLaunchBootManagerItem->SetEnabled(false);
@@ -271,6 +285,11 @@ InstallerWindow::InstallerWindow()
 	BMenu* toolsMenu = new BMenu(B_TRANSLATE("Tools"));
 	toolsMenu->AddItem(fLaunchBootManagerItem);
 	toolsMenu->AddItem(fMakeBootableItem);
+#ifdef HAIKU_DISTRO_COMPATIBILITY_COMPATIBLE
+	toolsMenu->AddItem(new BMenuItem(
+		B_TRANSLATE("Set up disk for Tabby" B_UTF8_ELLIPSIS),
+		new BMessage(SETUP_TABBY_DISK)));
+#endif
 	toolsMenu->AddItem(fEFILoaderMenu);
 	mainMenu->AddItem(toolsMenu);
 
@@ -289,7 +308,12 @@ InstallerWindow::InstallerWindow()
 			.AddGrid(new BGridView(B_USE_ITEM_SPACING, B_USE_ITEM_SPACING))
 				.AddMenuField(fSrcMenuField, 0, 0)
 				.AddMenuField(fDestMenuField, 0, 1)
+#ifdef HAIKU_DISTRO_COMPATIBILITY_COMPATIBLE
+				.Add(fSetupTabbyDiskButton, 2, 1)
+				.AddGlue(2, 0)
+#else
 				.AddGlue(2, 0, 1, 2)
+#endif
 				.Add(BSpaceLayoutItem::CreateVerticalStrut(5), 0, 2, 3)
 			.End()
 			.Add(packagesGroup)
@@ -399,7 +423,8 @@ InstallerWindow::MessageReceived(BMessage *msg)
 					fBeginButton->SetLabel(B_TRANSLATE("Stop"));
 					_DisableInterface(true);
 
-					fProgressBar->SetTo(0.0, NULL, NULL);
+					fProgressBar->Reset(B_TRANSLATE("Install progress:  "));
+					fProgressBar->SetMaxValue(100.0);
 
 					fPkgSwitchLayoutItem->SetVisible(false);
 					fPackagesLayoutItem->SetVisible(false);
@@ -439,6 +464,27 @@ InstallerWindow::MessageReceived(BMessage *msg)
 		case LAUNCH_DRIVE_SETUP:
 			_LaunchDriveSetup();
 			break;
+		case SETUP_TABBY_DISK:
+			_SetupTabbyDisk();
+			break;
+		case SETUP_TABBY_DONE:
+		{
+			int32 setupResult = msg->GetInt32("result", -1);
+			_DisableInterface(false);
+			fProgressLayoutItem->SetVisible(false);
+			fPkgSwitchLayoutItem->SetVisible(true);
+			if (setupResult != 0) {
+				(new BAlert("", B_TRANSLATE("Setting up the disk failed. See "
+					"the system log for details."), B_TRANSLATE("OK"), NULL,
+					NULL, B_WIDTH_AS_USUAL, B_STOP_ALERT))->Go();
+			} else {
+				(new BAlert("", B_TRANSLATE("The disk is ready. Choose it "
+					"under \"Onto\" and click \"Begin\" to install."),
+					B_TRANSLATE("OK")))->Go();
+			}
+			_ScanPartitions();
+			break;
+		}
 		case LAUNCH_BOOTMAN:
 			_LaunchBootManager();
 			break;
@@ -455,10 +501,20 @@ InstallerWindow::MessageReceived(BMessage *msg)
 		}
 		case ENCOURAGE_DRIVESETUP:
 		{
+#ifdef HAIKU_DISTRO_COMPATIBILITY_COMPATIBLE
+			BAlert* alert = new BAlert("use drive setup", B_TRANSLATE(
+				"No disk is ready to install Tabby yet.\n\n"
+				"Click \"Set up disk for Tabby\" to erase a disk and prepare "
+				"it automatically - an Apple partition map with a small "
+				"boot-loader partition and a Be File System partition. Then "
+				"choose it under \"Onto\" and click \"Begin\"."),
+				B_TRANSLATE("OK"));
+#else
 			BAlert* alert = new BAlert("use drive setup", B_TRANSLATE("No partitions have "
 				"been found that are suitable for installation. Please set "
 				"up partitions and format at least one partition with the "
 				"Be File System."), B_TRANSLATE("OK"));
+#endif
 			alert->SetFlags(alert->Flags() | B_CLOSE_ON_ESCAPE);
 			alert->Go();
 			break;
@@ -677,6 +733,164 @@ InstallerWindow::_ShowOptionalPackages()
 
 
 void
+InstallerWindow::_SetupTabbyDisk()
+{
+	// One-click PowerPC disk setup: erase a chosen disk and lay down the layout
+	// Tabby needs to boot (Apple partition map + a small Apple_HFS loader
+	// partition + a Haiku_BFS system partition, formatted). This reuses the
+	// tabby_install tool, then the user just picks the new volume under "Onto"
+	// and installs - the "Write boot sector" step then writes the loader.
+	BDiskDeviceRoster roster;
+
+	// Never offer the disk we booted from.
+	partition_id bootDiskID = -1;
+	BVolume bootVolume;
+	BDiskDevice bootDevice;
+	BPartition* bootPartition;
+	if (BVolumeRoster().GetBootVolume(&bootVolume) == B_OK
+		&& roster.FindPartitionByVolume(bootVolume, &bootDevice, &bootPartition)
+			== B_OK) {
+		bootDiskID = bootDevice.ID();
+	}
+
+	BPopUpMenu diskMenu("disks", false, false);
+	BDiskDevice device;
+	roster.RewindDevices();
+	while (roster.GetNextDevice(&device) == B_OK) {
+		if (device.ID() == bootDiskID || device.IsReadOnly())
+			continue;
+		BPath path;
+		if (device.GetPath(&path) != B_OK)
+			continue;
+		BString label;
+		label.SetToFormat("%s  (%.1f GB)", path.Path(),
+			device.Size() / (1024.0 * 1024.0 * 1024.0));
+		BMessage* msg = new BMessage(SETUP_TABBY_DISK);
+		msg->AddString("path", path.Path());
+		diskMenu.AddItem(new BMenuItem(label.String(), msg));
+	}
+
+	if (diskMenu.CountItems() == 0) {
+		(new BAlert("", B_TRANSLATE("No writable disk was found to set up. "
+			"Attach a target disk and try again."), B_TRANSLATE("OK")))->Go();
+		return;
+	}
+
+	// pick the disk (auto-select when there is only one)
+	BMenuItem* chosen;
+	if (diskMenu.CountItems() == 1)
+		chosen = diskMenu.ItemAt(0);
+	else {
+		BPoint where;
+		uint32 buttons;
+		fLaunchDriveSetupButton->GetMouse(&where, &buttons, false);
+		fLaunchDriveSetupButton->ConvertToScreen(&where);
+		chosen = diskMenu.Go(where, false, true);
+	}
+	if (chosen == NULL || chosen->Message() == NULL)
+		return;
+	BString path(chosen->Message()->GetString("path", ""));
+	if (path.IsEmpty())
+		return;
+
+	// destructive - confirm
+	BString warning;
+	warning.SetToFormat(B_TRANSLATE("This will ERASE the entire disk\n\n%s\n\n"
+		"and set it up to boot Tabby (an Apple partition map with a loader "
+		"partition and a Be File System partition). All data on the disk will "
+		"be lost.\n\nContinue?"), path.String());
+	BAlert* confirm = new BAlert("confirm", warning.String(),
+		B_TRANSLATE("Cancel"), B_TRANSLATE("Erase and set up"), NULL,
+		B_WIDTH_AS_USUAL, B_WARNING_ALERT);
+	confirm->SetShortcut(0, B_ESCAPE);
+	if (confirm->Go() != 1)
+		return;
+
+	// The partition + format + loader write take a while, so run them in a
+	// background thread and show progress instead of freezing the window.
+	fSetupDiskPath = path;
+
+	_DisableInterface(true);
+	fBeginButton->SetEnabled(false);
+	fProgressBar->Reset(B_TRANSLATE("Disk setup:  "));
+	fProgressBar->SetMaxValue(100.0);
+	fPkgSwitchLayoutItem->SetVisible(false);
+	fPackagesLayoutItem->SetVisible(false);
+	fSizeViewLayoutItem->SetVisible(false);
+	fProgressLayoutItem->SetVisible(true);
+	_SetStatusMessage(B_TRANSLATE("Setting up the disk for Tabby. This can "
+		"take a minute" B_UTF8_ELLIPSIS));
+
+	thread_id thread = spawn_thread(_SetupTabbyDiskThread, "tabby-disk-setup",
+		B_NORMAL_PRIORITY, this);
+	if (thread >= 0)
+		resume_thread(thread);
+	else {
+		_DisableInterface(false);
+		fProgressLayoutItem->SetVisible(false);
+		fPkgSwitchLayoutItem->SetVisible(true);
+	}
+}
+
+
+int32
+InstallerWindow::_SetupTabbyDiskThread(void* data)
+{
+	InstallerWindow* self = (InstallerWindow*)data;
+	BMessenger messenger(self);
+
+	BString diskPath;
+	if (self->LockLooper()) {
+		diskPath = self->fSetupDiskPath;
+		self->UnlockLooper();
+	}
+
+	// 1) partition the disk and format the Be File System partition
+	{
+		BMessage msg(MSG_STATUS_MESSAGE);
+		msg.AddFloat("progress", 10.0);
+		msg.AddString("item",
+			B_TRANSLATE("Partitioning and formatting the disk"));
+		msg.AddInt32("current", 1);
+		msg.AddInt32("maximum", 2);
+		messenger.SendMessage(&msg);
+	}
+	BString command;
+	command.SetToFormat("/boot/system/bin/tabby_install \"%s\"",
+		diskPath.String());
+	int result = system(command.String());
+
+	// 2) write the OpenFirmware loader onto the Apple_HFS partition
+	if (result == 0) {
+		BMessage msg(MSG_STATUS_MESSAGE);
+		msg.AddFloat("progress", 65.0);
+		msg.AddString("item", B_TRANSLATE("Writing the boot loader"));
+		msg.AddInt32("current", 2);
+		msg.AddInt32("maximum", 2);
+		messenger.SendMessage(&msg);
+
+		command.SetToFormat("/boot/system/bin/makebootable \"%s\"",
+			diskPath.String());
+		result = system(command.String());
+	}
+
+	{
+		BMessage msg(MSG_STATUS_MESSAGE);
+		msg.AddFloat("progress", 100.0);
+		msg.AddString("item", B_TRANSLATE("Finishing"));
+		msg.AddInt32("current", 2);
+		msg.AddInt32("maximum", 2);
+		messenger.SendMessage(&msg);
+	}
+
+	BMessage done(SETUP_TABBY_DONE);
+	done.AddInt32("result", result);
+	messenger.SendMessage(&done);
+	return 0;
+}
+
+
+void
 InstallerWindow::_LaunchDriveSetup()
 {
 	if (be_roster->Launch(kDriveSetupSignature) != B_OK) {
@@ -740,6 +954,9 @@ InstallerWindow::_DisableInterface(bool disable)
 	fMakeBootableItem->SetEnabled(!disable);
 	fSrcMenuField->SetEnabled(!disable);
 	fDestMenuField->SetEnabled(!disable);
+#ifdef HAIKU_DISTRO_COMPATIBILITY_COMPATIBLE
+	fSetupTabbyDiskButton->SetEnabled(!disable);
+#endif
 }
 
 
