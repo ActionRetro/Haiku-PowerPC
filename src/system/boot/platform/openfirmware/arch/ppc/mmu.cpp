@@ -573,8 +573,22 @@ suggested_page_table_size(size_t total)
 	// Map() panics on a full PTEG rather than evicting. RAM/32 keeps every
 	// bucket comfortably below the 16-slot limit and stays within the PPC
 	// architectural 32 MB page-table ceiling.
-	return 1UL << (max - 5);
-		// RAM/32, capped by the PPC 32 MB page-table ceiling
+	size_t size = 1UL << (max - 5);
+		// RAM/32
+
+	// HARD CAP at 32 MB: the classic PPC hashed page table is limited to 32 MB
+	// by SDR1s 9-bit HTABMASK ((0x1ff + 1) * 64 KB = 32 MB). Requesting more
+	// (>1 GB RAM -> this formula yields 64 MB) cannot be encoded in SDR1 - the
+	// hardware ends up using a SMALLER table than fPageTableHashMask assumes, so
+	// Map() inserts PTEs into groups the CPUs hash walk never checks. The result
+	// is random "PTE not found" DSI panics under memory pressure (seen on a
+	// 1.5 GB PowerBook G4 as a slab-allocator/create_pipe crash and USB I/O
+	// hard-locks). The comment here previously claimed this cap but the code
+	// never applied it.
+	if (size > 32UL * 1024 * 1024)
+		size = 32UL * 1024 * 1024;
+
+	return size;
 }
 
 
