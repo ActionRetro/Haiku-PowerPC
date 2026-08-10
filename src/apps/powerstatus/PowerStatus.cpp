@@ -14,6 +14,7 @@
 #include <Catalog.h>
 #include <Deskbar.h>
 #include <Entry.h>
+#include <Roster.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -140,13 +141,14 @@ PowerStatus::ReadyToRun()
 			B_WARNING_ALERT);
 
 		if (fAutoInstallInDeskbar || alert->Go()) {
-			image_info info;
-			entry_ref ref;
-
-			if (our_image(info) == B_OK
-				&& get_ref_for_path(info.name, &ref) == B_OK) {
+			// Resolve our own executable via the app roster rather than
+			// our_image()/image_info.text: on ppc every image reports text=0
+			// (single RWX LOAD segment), so our_image() never matches by address
+			// range and the Deskbar install would silently no-op.
+			app_info info;
+			if (be_app->GetAppInfo(&info) == B_OK) {
 				BDeskbar deskbar;
-				deskbar.AddItem(&ref);
+				deskbar.AddItem(&info.ref);
 			}
 
 			Quit();

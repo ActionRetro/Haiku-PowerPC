@@ -24,6 +24,7 @@
 #include <stdio.h>
 
 #include <keyboard_mouse_driver.h>
+#include "device/power_managment.h"
 #include <PCI.h>
 #include <module.h>
 
@@ -82,6 +83,8 @@ enum {
 #define PMU_INT_TICK		0x80	// data[0] bit: 1-second tick
 #define PMU_SET_INTR_MASK	0x70	// set which PMU interrupts are delivered
 #define PMU_SYSTEM_READY	0xdf	// tell the PMU the OS is up (KeyLargo)
+#define PMU_BATTERY_STATE	0x6b	// legacy battery-state query
+#define PMU_SMART_BATTERY_STATE	0x6f	// smart-battery query (PowerBook G4)
 // KeyLargo PMU interrupt mask (matches Linux): PCEJECT|SNDBRT|ADB|ENV|TICK.
 #define PMU_INTR_MASK_VALUE	0xdc	// Linux KeyLargo: PCEJECT|SNDBRT|ADB|ENV|TICK
 
@@ -141,6 +144,7 @@ static int sPmuLen = -1;
 static int sPmuSendLen = -1;	// wire send-length rule for the current cmd
 static int sPmuReplyLen = 0;	// expected reply length (0 none, -1 length-prefixed)
 static uint8 sPmuReply[32];	// command reply (discarded)
+static volatile int sPmuLastLen = 0;	// byte count of the last command reply
 static uint8* sPmuReplyPtr = NULL;
 static uint8 sPmuIntr[32];		// interrupt/autopoll reply
 static volatile bool sPmuDidInput = false;
@@ -555,8 +559,10 @@ pmu_sr_intr(void)
 			}
 			if (sPmuState == PMU_READING_INTR)
 				pmu_handle_data(sPmuIntr, sPmuIndex);
-			else
+			else {
+				sPmuLastLen = sPmuIndex;			// bytes now in sPmuReply
 				sPmuReqActive = false;				// command reply consumed
+			}
 			sPmuState = PMU_IDLE;
 			pmu_sr_off();
 			break;
@@ -613,14 +619,184 @@ pmu_queue_wait(const uint8* data, int nbytes, int sendLen, int replyLen)
 	sPmuReplyLen = replyLen;
 	sPmuReqActive = true;
 
-	cpu_status st = disable_interrupts();
-	pmu_start();
-	restore_interrupts(st);
+	// Only transmit once the bus is CLEAR: the state machine idle, no CB1, and
+	// the PMU not asserting extint-gpio1 (pending autopoll/reply data, active
+	// low). Sending a command while the PMU has data pending desyncs the
+	// protocol and powers the machine off - the battery poll thread hit this
+	// during the fork-heavy first-login storm. Wait with interrupts enabled
+	// between checks (so the gpio1/SR handlers drain any pending data), then
+	// start under a brief interrupt disable so check-and-send is atomic.
+	for (int i = 0; i < 40000 && sPmuReqActive; i++) {
+		cpu_status st = disable_interrupts();
+		uint8 gpio = 0xff;
+		if (sGpioExt1 != 0) {
+			gpio = *(volatile uint8*)sGpioExt1;
+			asm volatile("eieio" ::: "memory");
+		}
+		bool clear = sPmuState == PMU_IDLE && !sPmuCB1
+			&& (gpio & KEYLARGO_GPIO_LEVEL) != 0;
+		if (clear) {
+			pmu_start();
+			restore_interrupts(st);
+			break;
+		}
+		restore_interrupts(st);
+		spin(20);
+	}
 
 	for (int i = 0; i < 200000 && sPmuReqActive; i++)
 		spin(10);
 	return !sPmuReqActive;
 }
+
+
+// --- PMU battery monitor ---------------------------------------------------
+// The smart-battery query (0x6f, battery arg 2) returns a length-prefixed
+// record; scan for its "0a 05" anchor (length 10, format 5) and parse:
+//   [flags][charge:2][max charge:2][current:2 signed][voltage:2]  (BE mAh/mA/mV)
+// flags bit0 = AC present. A poll thread refreshes a cache every ~5 s and the
+// /dev/power/pmu_battery device serves it to the PowerStatus applet via the
+// same ioctl protocol as acpi_battery, so no app changes are needed.
+static thread_id sBatteryThread = -1;
+static bool sBatteryStop = false;
+
+static volatile bool sBatValid = false;
+static volatile uint8 sBatFlags = 0;
+static volatile uint32 sBatCharge = 0;		// mAh
+static volatile uint32 sBatMax = 0;			// mAh (full-charge capacity)
+static volatile int32 sBatCurrent = 0;		// signed mA (negative = discharging)
+static volatile uint32 sBatVoltage = 0;		// mV
+
+static bool
+pmu_read_battery(void)
+{
+	uint8 req[2] = { PMU_SMART_BATTERY_STATE, 2 };
+	if (!pmu_queue_wait(req, 2, 1, -1))
+		return false;
+	int n = sPmuLastLen;
+	if (n > 32)
+		n = 32;
+	// The synchronous reader occasionally captures leading 0x55 SR filler, so
+	// scan for the record anchor rather than assuming a fixed offset.
+	for (int i = 0; i + 10 < n; i++) {
+		if (sPmuReply[i] != 0x0a || sPmuReply[i + 1] != 0x05)
+			continue;
+		const uint8* r = &sPmuReply[i + 1];	// r[0]=format, r[1]=flags, ...
+		sBatFlags = r[1];
+		sBatCharge = ((uint32)r[2] << 8) | r[3];
+		sBatMax = ((uint32)r[4] << 8) | r[5];
+		sBatCurrent = (int32)(int16)(((uint16)r[6] << 8) | r[7]);
+		sBatVoltage = ((uint32)r[8] << 8) | r[9];
+		sBatValid = true;
+		return true;
+	}
+	return false;
+}
+
+static int32
+battery_poll_thread(void*)
+{
+	snooze(3000000);
+	while (!sBatteryStop) {
+		pmu_read_battery();
+		for (int i = 0; i < 50 && !sBatteryStop; i++)
+			snooze(100000);		// ~5 s between polls
+	}
+	return 0;
+}
+
+
+// PowerStatus opens every /dev/power device and issues IDENTIFY_DEVICE; a
+// battery identifies itself with kMagicACPIBatteryID. We answer that and the
+// battery-info ioctls from the cached PMU record.
+static status_t
+battery_open(const char* name, uint32 flags, void** cookie)
+{
+	(void)name; (void)flags;
+	*cookie = NULL;
+	return B_OK;
+}
+
+static status_t
+battery_close(void* cookie)
+{
+	(void)cookie;
+	return B_OK;
+}
+
+static status_t
+battery_free(void* cookie)
+{
+	(void)cookie;
+	return B_OK;
+}
+
+static status_t
+battery_read(void* cookie, off_t pos, void* buffer, size_t* length)
+{
+	(void)cookie; (void)pos; (void)buffer;
+	*length = 0;
+	return B_OK;
+}
+
+static status_t
+battery_control(void* cookie, uint32 op, void* arg, size_t length)
+{
+	(void)cookie; (void)length;
+	switch (op) {
+		case IDENTIFY_DEVICE:
+		{
+			uint32 magic = kMagicACPIBatteryID;
+			return user_memcpy(arg, &magic, sizeof(magic));
+		}
+		case GET_BATTERY_INFO:
+		{
+			// Return only the cached record. This ioctl runs on arbitrary
+			// threads (the Deskbar replicant polls it often); it must NEVER
+			// issue a PMU command, or it races the poll thread over the shared
+			// PMU request buffer and desyncs the PMU -> the machine powers off.
+			// The poll thread is the sole PMU battery reader.
+			acpi_battery_info info;
+			memset(&info, 0, sizeof(info));
+			bool ac = (sBatFlags & 0x01) != 0;
+			int32 current = sBatCurrent;
+			if (!ac || current < -20)
+				info.state = BATTERY_DISCHARGING;
+			else if (sBatMax > 0 && sBatCharge + sBatMax / 50 < sBatMax)
+				info.state = BATTERY_CHARGING;
+			else
+				info.state = BATTERY_NOT_CHARGING;
+			if (sBatMax > 0 && sBatCharge * 20 < sBatMax)
+				info.state |= BATTERY_CRITICAL_STATE;
+			info.current_rate = (current < 0) ? (uint32)(-current)
+				: (uint32)current;
+			info.capacity = sBatCharge;
+			info.voltage = sBatVoltage;
+			return user_memcpy(arg, &info, sizeof(info));
+		}
+		case GET_EXTENDED_BATTERY_INFO:
+		{
+			acpi_extended_battery_info ext;
+			memset(&ext, 0, sizeof(ext));
+			ext.power_unit = ACPI_BATTERY_UNIT_MA;
+			ext.design_capacity = sBatMax;
+			ext.last_full_charge = sBatMax;
+			ext.design_voltage = sBatVoltage;
+			strlcpy(ext.model_number, "PMU", sizeof(ext.model_number));
+			strlcpy(ext.type, "LION", sizeof(ext.type));
+			return user_memcpy(arg, &ext, sizeof(ext));
+		}
+		case WATCH_BATTERY:
+		case STOP_WATCHING_BATTERY:
+			return B_OK;
+	}
+	return B_DEV_INVALID_IOCTL;
+}
+
+static device_hooks sBatteryHooks = {
+	battery_open, battery_close, battery_free, battery_control,
+	battery_read, NULL, NULL, NULL, NULL, NULL
+};
 
 
 // Wait for one shift-register byte to complete (polled), then clear the flag.
@@ -1012,6 +1188,11 @@ init_driver_pmu(void)
 
 	INFO("VIA-PMU up (mac-io %#" B_PRIxPHYSADDR " + %#x, irq %#x/gpio %#x), polloff=%d mask=%d ready=%d poll=%d\n",
 		physBase, PMU_VIA_OFFSET, PMU_IRQ, PMU_GPIO1_IRQ, pollOffOk, maskOk, readyOk, pollOk);
+	sBatteryStop = false;
+	sBatteryThread = spawn_kernel_thread(battery_poll_thread,
+		"pmu battery diag", B_LOW_PRIORITY, NULL);
+	if (sBatteryThread >= 0)
+		resume_thread(sBatteryThread);
 	return B_OK;
 }
 
@@ -1028,6 +1209,12 @@ uninit_driver(void)
 {
 	if (sRegisterArea >= 0) {
 		if (sIsPMU) {
+			sBatteryStop = true;
+			if (sBatteryThread >= 0) {
+				status_t r;
+				wait_for_thread(sBatteryThread, &r);
+				sBatteryThread = -1;
+			}
 			remove_io_interrupt_handler(PMU_IRQ, adb_pmu_interrupt, NULL);
 			remove_io_interrupt_handler(PMU_GPIO1_IRQ, adb_gpio1_interrupt, NULL);
 		} else
@@ -1043,18 +1230,26 @@ uninit_driver(void)
 const char**
 publish_devices(void)
 {
-	static const char* devices[] = {
+	static const char* devicesPMU[] = {
+		"input/keyboard/adb/0",
+		"input/mouse/adb/0",
+		"power/pmu_battery/0",
+		NULL
+	};
+	static const char* devicesBase[] = {
 		"input/keyboard/adb/0",
 		"input/mouse/adb/0",
 		NULL
 	};
-	return devices;
+	return sIsPMU ? devicesPMU : devicesBase;
 }
 
 
 device_hooks*
 find_device(const char* name)
 {
+	if (strstr(name, "pmu_battery") != NULL)
+		return &sBatteryHooks;
 	if (strstr(name, "keyboard") != NULL)
 		return &sKeyboardHooks;
 	if (strstr(name, "mouse") != NULL)
