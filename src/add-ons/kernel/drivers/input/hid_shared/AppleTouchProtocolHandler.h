@@ -32,6 +32,13 @@ private:
 			bool			fHaveBaseline;
 			int32			fLastX;
 			int32			fLastY;
+			int32			fSmoothX;
+			int32			fSmoothY;
+			int32			fHistX[3];
+			int32			fHistY[3];
+			int32			fHistN;
+			bool			fFingerDown;
+			int32			fMoveHold;
 			bool			fHaveLast;
 			int32			fAccumX;
 			int32			fAccumY;

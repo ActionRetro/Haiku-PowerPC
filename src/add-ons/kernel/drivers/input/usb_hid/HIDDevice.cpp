@@ -158,12 +158,15 @@ HIDDevice::HIDDevice(usb_device device, const usb_configuration_info *config,
 	}
 #endif
 
-	// Apple "Geyser" trackpad (05ac:030b) streams raw sensor data only after a
-	// mode switch: HID GET_REPORT(feature,0) then SET_REPORT(feature,0) with
-	// data[0]=0x04 (per Linux appletooch / OpenBSD atp). Mark it so the
-	// AppleTouch protocol handler claims it.
+	// Apple "Fountain" (05ac:030a, e.g. 12" PowerBook G4) and "Geyser1"
+	// (05ac:030b, iBook G4) trackpads stream raw sensor data only after a mode
+	// switch: HID GET_REPORT(feature,0) then SET_REPORT(feature,0) with
+	// data[0]=0x04 (per Linux appletouch / OpenBSD atp). The two share an
+	// identical 16x16-sensor / 81-byte report format, so both use the same
+	// AppleTouch decode. Mark it so the AppleTouch protocol handler claims it.
 	if (deviceDescriptor->vendor_id == 0x05ac
-		&& deviceDescriptor->product_id == 0x030b) {
+		&& (deviceDescriptor->product_id == 0x030b
+			|| deviceDescriptor->product_id == 0x030a)) {
 		uint8 mode[8];
 		size_t modeLength = sizeof(mode);
 		status_t modeResult = gUSBModule->send_request(device,
@@ -179,8 +182,8 @@ HIDDevice::HIDDevice(usb_device device, const usb_configuration_info *config,
 				sizeof(mode), mode, &modeLength);
 		}
 		fIsAppleTouch = true;
-		dprintf("usb_hid: appletouch 05ac:030b raw-mode switch: %s\n",
-			strerror(modeResult));
+		dprintf("usb_hid: appletouch 05ac:%04x raw-mode switch: %s\n",
+			deviceDescriptor->product_id, strerror(modeResult));
 	}
 
 	status_t result = fParser.ParseReportDescriptor(reportDescriptor,
