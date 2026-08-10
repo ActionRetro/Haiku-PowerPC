@@ -43,6 +43,8 @@ private:
 			int32			fAccumX;
 			int32			fAccumY;
 			uint32			fLastButtons;
+			int32			fIdleCount;
+			int32			fStuckCount;
 };
 
 #endif // USB_APPLETOUCH_PROTOCOL_HANDLER_H

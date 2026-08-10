@@ -38,7 +38,9 @@ AppleTouchProtocolHandler::AppleTouchProtocolHandler(HIDReport &report)
 	fHaveLast(false),
 	fAccumX(0),
 	fAccumY(0),
-	fLastButtons(0)
+	fLastButtons(0),
+	fIdleCount(0),
+	fStuckCount(0)
 {
 	TRACE_ALWAYS("appletouch: Geyser trackpad handler, report size %lu\n",
 		(unsigned long)report.ReportSize());
@@ -213,8 +215,32 @@ AppleTouchProtocolHandler::_ReadReport(void *buffer, uint32 *cookie)
 			fFingerDown = false;
 	}
 
+	// Recalibration timings (reports): fully re-snap the idle baseline this
+	// often to follow slow thermal drift; and treat a "finger" held longer
+	// than this as a stale-baseline phantom to be dropped. The pad streams
+	// reports at ~90-125 Hz, so these are roughly 3 s and 15-20 s.
+	const int32 kIdleRecal = 256;
+	const int32 kStuckLimit = 1800;
 	int32 dx = 0, dy = 0;
 	bool finger = fFingerDown && xsum > 0 && ysum > 0;
+	if (finger)
+		fIdleCount = 0;
+	// Stuck-baseline watchdog: a real finger never stays continuously down
+	// for many seconds. If "finger down" persists far past any plausible
+	// gesture it is almost certainly a stale baseline that slow thermal drift
+	// has pushed above the detection gate - a phantom that makes the cursor
+	// wander in small circles on its own after a few minutes. Force a full
+	// baseline recapture and drop it (falling through to the no-finger reset
+	// path) so the pad self-heals.
+	if (finger && ++fStuckCount > kStuckLimit) {
+		for (int i = 0; i < 16; i++) {
+			fBaseX[i] = xcur[i];
+			fBaseY[i] = ycur[i];
+		}
+		fFingerDown = false;
+		finger = false;
+		fStuckCount = 0;
+	}
 	if (finger) {
 		// Weighted-centroid absolute position at high (x64) resolution.
 		int32 posX = (int32)(xacc * 64 / xsum);
@@ -329,13 +355,30 @@ AppleTouchProtocolHandler::_ReadReport(void *buffer, uint32 *cookie)
 		fMoveHold = 0;
 		fAccumX = 0;
 		fAccumY = 0;
-		// Update the baseline ONLY when the pad is truly untouched (raw signal
-		// below the freeze gate), and slowly (>>6). The old code updated the
-		// baseline whenever no finger was *detected*, so a light or marginal
-		// touch was absorbed into the baseline within ~65 ms - erasing the
-		// signal and making the finger undetectable. Decoupling the freeze from
-		// detection (and slowing it) is what makes the pad reliably track.
-		if (xsumRaw < 8 && ysumRaw < 8) {
+		fStuckCount = 0;
+		// Baseline tracking while no finger is detected. Two mechanisms:
+		// (1) When the pad is truly untouched (raw signal below the freeze
+		//     gate) track the baseline slowly (>>6). Doing this only when the
+		//     signal is genuinely low is what stops a light/marginal touch from
+		//     being absorbed into the baseline (which erased the signal and made
+		//     the finger undetectable).
+		// (2) Periodically FULL-snap the baseline to the current raw reading
+		//     every kIdleRecal reports of no detected finger. This is the cure
+		//     for slow thermal/humidity drift: as the sensors warm up their
+		//     resting value creeps into the 8..20 "no-finger-but-not-idle" band
+		//     where the >>6 freeze above is inhibited, so without this the
+		//     baseline froze forever and the drift eventually crossed the
+		//     detection gate into a phantom wandering finger ("cursor drifts in
+		//     little circles by itself after a few minutes"). Snapping during
+		//     the frequent no-finger moments keeps the baseline honest.
+		//     (appletouch does the same: memcpy(xy_old, xy_cur) on idlecount.)
+		if (++fIdleCount >= kIdleRecal) {
+			for (int i = 0; i < 16; i++) {
+				fBaseX[i] = xcur[i];
+				fBaseY[i] = ycur[i];
+			}
+			fIdleCount = 0;
+		} else if (xsumRaw < 8 && ysumRaw < 8) {
 			for (int i = 0; i < 16; i++) {
 				fBaseX[i] += (xcur[i] - fBaseX[i]) >> 6;
 				fBaseY[i] += (ycur[i] - fBaseY[i]) >> 6;
