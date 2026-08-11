@@ -1515,6 +1515,111 @@ arch_mmu_init(void)
 		}
 	}
 
+	// Capture the built-in AirPort (Broadcom BCM4306) IRQ from OF. Like the
+	// GMAC/CardBus, its PCI interrupt_line is unrouted; resolve the radio's
+	// interrupt through the parent PCI bridge's interrupt-map so bwi's
+	// bus_alloc_resource(SYS_RES_IRQ) finds a usable OpenPIC vector.
+	gKernelArgs.arch_args.airport_irq = 0;
+	{
+		intptr_t apRoot = of_finddevice("/");
+		for (intptr_t br = apRoot != -1 ? of_child(apRoot) : 0;
+				br != 0 && br != -1; br = of_peer(br)) {
+			char brType[32];
+			brType[0] = '\0';
+			of_getprop(br, "device_type", brType, sizeof(brType));
+			if (strcmp(brType, "pci") != 0)
+				continue;
+			for (intptr_t ch = of_child(br); ch != 0 && ch != -1;
+					ch = of_peer(ch)) {
+				char chName[32];
+				chName[0] = '\0';
+				of_getprop(ch, "name", chName, sizeof(chName));
+				if (strcmp(chName, "pci80211") != 0)
+					continue;
+				uint32 intr[8];
+				for (int i = 0; i < 8; i++)
+					intr[i] = 0;
+				intptr_t len = of_getprop(ch, "interrupts", intr, sizeof(intr));
+				uint32 resolvedIRQ = (len >= 4) ? intr[0] : 0;
+				uint32 childReg[4];
+				for (int i = 0; i < 4; i++)
+					childReg[i] = 0;
+				of_getprop(ch, "reg", childReg, sizeof(childReg));
+				uint32 imap[64];
+				for (int i = 0; i < 64; i++)
+					imap[i] = 0;
+				uint32 imask[4] = { 0, 0, 0, 0 };
+				intptr_t maplen = of_getprop(br, "interrupt-map", imap,
+					sizeof(imap));
+				of_getprop(br, "interrupt-map-mask", imask, sizeof(imask));
+				if (maplen >= 28) {
+					uint32 nCells = (uint32)maplen / 4;
+					uint32 keyHi = childReg[0] & imask[0];
+					uint32 keyIntr = resolvedIRQ & imask[3];
+					for (uint32 e = 0; e + 7 <= nCells; e += 7) {
+						if ((imap[e + 0] & imask[0]) == keyHi
+								&& (imap[e + 3] & imask[3]) == keyIntr) {
+							resolvedIRQ = imap[e + 5];
+							break;
+						}
+					}
+				}
+				if (resolvedIRQ != 0) {
+					gKernelArgs.arch_args.airport_irq = resolvedIRQ;
+					dprintf("airport irq: pin %u -> openpic %u\n",
+						(unsigned)((len >= 4) ? intr[0] : 0),
+						(unsigned)resolvedIRQ);
+				}
+			}
+		}
+	}
+
+	// Power on the built-in AirPort (Broadcom BCM4306) via Apple Open
+	// Firmware's own mac-io methods. The generic KeyLargo register sequence
+	// (KL2_AIRPORT_RESET_N + radio GPIOs, as in Linux core99_airport_enable)
+	// is insufficient on Intrepid (PowerBook6,4): the radio core stays gated
+	// (config space answers but its BAR master-aborts). The mac-io node
+	// exposes the machine-specific "enable-cardslot" + "init-cardslot-radio"
+	// methods (the OF enable sequence that the generic C reproduces only
+	// approximately). OF is callable from the loader, so invoke them here, so
+	// the radio is powered before the kernel enumerates PCI. Both are 0-arg,
+	// 0-return; of_call_method catches any throw, so a missing method is safe.
+	intptr_t airRoot = of_finddevice("/");
+	for (intptr_t br = airRoot != -1 ? of_child(airRoot) : 0;
+			br != 0 && br != -1; br = of_peer(br)) {
+		char brType[32];
+		brType[0] = '\0';
+		of_getprop(br, "device_type", brType, sizeof(brType));
+		if (strcmp(brType, "pci") != 0)
+			continue;
+		for (intptr_t ch = of_child(br); ch != 0 && ch != -1;
+				ch = of_peer(ch)) {
+			char chType[32];
+			chType[0] = '\0';
+			of_getprop(ch, "device_type", chType, sizeof(chType));
+			if (strcmp(chType, "mac-io") != 0)
+				continue;
+			char macioPath[256];
+			macioPath[0] = '\0';
+			if (of_package_to_path(ch, macioPath, sizeof(macioPath)) <= 0)
+				continue;
+			intptr_t ih = of_open(macioPath);
+			if (ih == 0 || ih == -1) {
+				dprintf("airport: could not open mac-io %s\n", macioPath);
+				continue;
+			}
+			// Correct order (from the OF method decompile): enable-cardslot
+			// asserts reset + configures the radio GPIOs, then
+			// init-cardslot-radio writes 0x1a3e0 and RELEASES the reset last.
+			intptr_t r1 = of_call_method((uint32_t)ih, "enable-cardslot", 0, 0);
+			intptr_t r2 = of_call_method((uint32_t)ih, "init-cardslot-radio",
+				0, 0);
+			dprintf("airport: OF %s enable-cardslot=%ld "
+				"init-cardslot-radio=%ld\n", macioPath, (long)r1, (long)r2);
+			of_close(ih);
+		}
+	}
+
 	return B_OK;
 }
 

@@ -380,6 +380,7 @@ static uint32 sGmacIRQ = 0;
 static uint32 sCardBusIRQ = 0;
 static uint32 sCardBusMemBase = 0;
 static uint32 sKauaiAtaIRQ = 0;
+static uint32 sAirportIRQ = 0;
 static uint8 sGmacMAC[6] = { 0, 0, 0, 0, 0, 0 };
 static bool sGmacMACValid = false;
 
@@ -422,6 +423,13 @@ extern "C" uint32
 ppc_get_cardbus_irq()
 {
 	return sCardBusIRQ;
+}
+
+
+extern "C" uint32
+ppc_get_airport_irq()
+{
+	return sAirportIRQ;
 }
 
 
@@ -470,6 +478,7 @@ arch_platform_init(struct kernel_args *kernelArgs)
 	sCardBusIRQ = kernelArgs->arch_args.cardbus_irq;
 	sCardBusMemBase = kernelArgs->arch_args.cardbus_mem_base;
 	sKauaiAtaIRQ = kernelArgs->arch_args.kauai_ata_irq;
+	sAirportIRQ = kernelArgs->arch_args.airport_irq;
 	sGmacMACValid = kernelArgs->arch_args.gmac_mac_valid != 0;
 	for (int i = 0; i < 6; i++)
 		sGmacMAC[i] = kernelArgs->arch_args.gmac_mac[i];

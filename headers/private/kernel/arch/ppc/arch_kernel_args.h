@@ -66,6 +66,9 @@ typedef struct {
 	// OpenPIC IRQ of the CardBus (PC Card) bridge, resolved from the OF
 	// interrupt-map by the loader; the card's INTA routes through the bridge.
 	uint32		cardbus_irq;
+	// OpenPIC IRQ of the built-in AirPort (Broadcom BCM4306), resolved from the
+	// OF interrupt-map by the loader; its PCI interrupt_line is unrouted.
+	uint32		airport_irq;
 	// CPU/PCI base of the CardBus bridge's memory window (from the OF
 	// `ranges`); the card's register BAR is placed here. 0 = unknown.
 	uint32		cardbus_mem_base;
