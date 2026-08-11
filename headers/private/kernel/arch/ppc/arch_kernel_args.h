@@ -63,6 +63,16 @@ typedef struct {
 	// when no address was found.
 	uint8		gmac_mac[6];
 	uint32		gmac_mac_valid;
+	// OpenPIC IRQ of the CardBus (PC Card) bridge, resolved from the OF
+	// interrupt-map by the loader; the card's INTA routes through the bridge.
+	uint32		cardbus_irq;
+	// CPU/PCI base of the CardBus bridge's memory window (from the OF
+	// `ranges`); the card's register BAR is placed here. 0 = unknown.
+	uint32		cardbus_mem_base;
+	// OpenPIC IRQ of the Kauai/Intrepid ATA controller (compatible
+	// "kauai-ata", a separate PCI function, not a mac-io cell), resolved from
+	// the OF interrupt-map by the loader. 0 = none/unknown.
+	uint32		kauai_ata_irq;
 } arch_kernel_args;
 
 #endif	/* KERNEL_ARCH_PPC_KERNEL_ARGS_H */

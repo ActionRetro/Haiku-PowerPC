@@ -377,6 +377,9 @@ static struct {
 } sPCIHostBridges[MAX_PCI_HOST_BRIDGES];
 
 static uint32 sGmacIRQ = 0;
+static uint32 sCardBusIRQ = 0;
+static uint32 sCardBusMemBase = 0;
+static uint32 sKauaiAtaIRQ = 0;
 static uint8 sGmacMAC[6] = { 0, 0, 0, 0, 0, 0 };
 static bool sGmacMACValid = false;
 
@@ -414,6 +417,26 @@ ppc_get_gmac_irq()
 	return sGmacIRQ;
 }
 
+
+extern "C" uint32
+ppc_get_cardbus_irq()
+{
+	return sCardBusIRQ;
+}
+
+
+extern "C" uint32
+ppc_get_cardbus_mem_base()
+{
+	return sCardBusMemBase;
+}
+
+extern "C" uint32
+ppc_get_kauai_ata_irq()
+{
+	return sKauaiAtaIRQ;
+}
+
 extern "C" bool
 ppc_get_gmac_mac(uint8* address)
 {
@@ -444,6 +467,9 @@ arch_platform_init(struct kernel_args *kernelArgs)
 	sPCIConfigAddress = kernelArgs->arch_args.pci_config_address;
 	sPCIConfigData = kernelArgs->arch_args.pci_config_data;
 	sGmacIRQ = kernelArgs->arch_args.gmac_irq;
+	sCardBusIRQ = kernelArgs->arch_args.cardbus_irq;
+	sCardBusMemBase = kernelArgs->arch_args.cardbus_mem_base;
+	sKauaiAtaIRQ = kernelArgs->arch_args.kauai_ata_irq;
 	sGmacMACValid = kernelArgs->arch_args.gmac_mac_valid != 0;
 	for (int i = 0; i < 6; i++)
 		sGmacMAC[i] = kernelArgs->arch_args.gmac_mac[i];

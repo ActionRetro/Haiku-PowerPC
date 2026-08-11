@@ -577,13 +577,13 @@ suggested_page_table_size(size_t total)
 		// RAM/32
 
 	// HARD CAP at 32 MB: the classic PPC hashed page table is limited to 32 MB
-	// by SDR1s 9-bit HTABMASK ((0x1ff + 1) * 64 KB = 32 MB). Requesting more
+	// by SDR1's 9-bit HTABMASK ((0x1ff + 1) * 64 KB = 32 MB). Requesting more
 	// (>1 GB RAM -> this formula yields 64 MB) cannot be encoded in SDR1 - the
 	// hardware ends up using a SMALLER table than fPageTableHashMask assumes, so
-	// Map() inserts PTEs into groups the CPUs hash walk never checks. The result
-	// is random "PTE not found" DSI panics under memory pressure (seen on a
-	// 1.5 GB PowerBook G4 as a slab-allocator/create_pipe crash and USB I/O
-	// hard-locks). The comment here previously claimed this cap but the code
+	// Map() inserts PTEs into groups the CPU's hash walk never checks. The
+	// result is random "PTE not found" DSI panics under memory pressure (seen on
+	// a 1.25 GB PowerBook G4 as a slab-allocator/create_pipe crash, and as USB
+	// I/O hard-locks). The comment here previously claimed this cap but the code
 	// never applied it.
 	if (size > 32UL * 1024 * 1024)
 		size = 32UL * 1024 * 1024;
@@ -1373,6 +1373,143 @@ arch_mmu_init(void)
 					dprintf("gmac mac from OF: "
 						"%02x:%02x:%02x:%02x:%02x:%02x\n",
 						mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+				}
+			}
+		}
+
+		// Capture the Kauai/Intrepid ATA controller IRQ from OF. On the 12"
+		// PowerBook G4 (PowerBook6,4) and other Intrepid/UniNorth-2 Macs the
+		// internal disk hangs off a SEPARATE PCI ATA function (compatible
+		// "kauai-ata"), whose PCI interrupt_line is unrouted; resolve its
+		// OpenPIC input through the parent PCI bridge's interrupt-map, exactly
+		// as for the GMAC above.
+		gKernelArgs.arch_args.kauai_ata_irq = 0;
+		for (intptr_t br = root != -1 ? of_child(root) : 0;
+				br != 0 && br != -1; br = of_peer(br)) {
+			char brType[32];
+			brType[0] = '\0';
+			of_getprop(br, "device_type", brType, sizeof(brType));
+			if (strcmp(brType, "pci") != 0)
+				continue;
+			for (intptr_t ch = of_child(br); ch != 0 && ch != -1;
+					ch = of_peer(ch)) {
+				char chType[32];
+				chType[0] = '\0';
+				of_getprop(ch, "device_type", chType, sizeof(chType));
+				if (strcmp(chType, "ata") != 0)
+					continue;
+				uint32 intr[8];
+				for (int i = 0; i < 8; i++)
+					intr[i] = 0;
+				intptr_t len = of_getprop(ch, "interrupts", intr,
+					sizeof(intr));
+				uint32 resolvedIRQ = (len >= 4) ? intr[0] : 0;
+				uint32 childReg[4];
+				for (int i = 0; i < 4; i++)
+					childReg[i] = 0;
+				of_getprop(ch, "reg", childReg, sizeof(childReg));
+				uint32 imap[64];
+				for (int i = 0; i < 64; i++)
+					imap[i] = 0;
+				uint32 imask[4] = { 0, 0, 0, 0 };
+				intptr_t maplen = of_getprop(br, "interrupt-map", imap,
+					sizeof(imap));
+				of_getprop(br, "interrupt-map-mask", imask, sizeof(imask));
+				if (maplen >= 28) {
+					uint32 nCells = (uint32)maplen / 4;
+					uint32 keyHi = childReg[0] & imask[0];
+					uint32 keyIntr = resolvedIRQ & imask[3];
+					for (uint32 e = 0; e + 7 <= nCells; e += 7) {
+						if ((imap[e + 0] & imask[0]) == keyHi
+								&& (imap[e + 3] & imask[3]) == keyIntr) {
+							resolvedIRQ = imap[e + 5];
+							break;
+						}
+					}
+				}
+				if (resolvedIRQ != 0) {
+					gKernelArgs.arch_args.kauai_ata_irq = resolvedIRQ;
+					dprintf("kauai-ata irq: pin %u -> openpic %u (maplen %ld)\n",
+						(unsigned)((len >= 4) ? intr[0] : 0),
+						(unsigned)resolvedIRQ, (long)maplen);
+				}
+			}
+		}
+
+		// Capture the CardBus (PC Card) bridge IRQ from OF. Its interrupt_line is
+		// unrouted; the inserted card's INTA routes through the bridge, so resolve
+		// the cardbus node's interrupt through the parent PCI bridge's
+		// interrupt-map, exactly as for the GMAC above.
+		gKernelArgs.arch_args.cardbus_irq = 0;
+		for (intptr_t br = root != -1 ? of_child(root) : 0;
+				br != 0 && br != -1; br = of_peer(br)) {
+			char brType[32];
+			brType[0] = '\0';
+			of_getprop(br, "device_type", brType, sizeof(brType));
+			if (strcmp(brType, "pci") != 0)
+				continue;
+			for (intptr_t ch = of_child(br); ch != 0 && ch != -1;
+					ch = of_peer(ch)) {
+				char chType[32];
+				chType[0] = '\0';
+				of_getprop(ch, "device_type", chType, sizeof(chType));
+				if (strcmp(chType, "cardbus") != 0)
+					continue;
+				uint32 intr[8];
+				for (int i = 0; i < 8; i++)
+					intr[i] = 0;
+				intptr_t len = of_getprop(ch, "interrupts", intr,
+					sizeof(intr));
+				uint32 resolvedIRQ = (len >= 4) ? intr[0] : 0;
+				uint32 childReg[4];
+				for (int i = 0; i < 4; i++)
+					childReg[i] = 0;
+				of_getprop(ch, "reg", childReg, sizeof(childReg));
+				uint32 imap[64];
+				for (int i = 0; i < 64; i++)
+					imap[i] = 0;
+				uint32 imask[4] = { 0, 0, 0, 0 };
+				intptr_t maplen = of_getprop(br, "interrupt-map", imap,
+					sizeof(imap));
+				of_getprop(br, "interrupt-map-mask", imask, sizeof(imask));
+				if (maplen >= 28) {
+					uint32 nCells = (uint32)maplen / 4;
+					uint32 keyHi = childReg[0] & imask[0];
+					uint32 keyIntr = resolvedIRQ & imask[3];
+					for (uint32 e = 0; e + 7 <= nCells; e += 7) {
+						if ((imap[e + 0] & imask[0]) == keyHi
+								&& (imap[e + 3] & imask[3]) == keyIntr) {
+							resolvedIRQ = imap[e + 5];
+							break;
+						}
+					}
+				}
+				if (resolvedIRQ != 0) {
+					gKernelArgs.arch_args.cardbus_irq = resolvedIRQ;
+					dprintf("cardbus irq: pin %u -> openpic %u\n",
+						(unsigned)((len >= 4) ? intr[0] : 0),
+						(unsigned)resolvedIRQ);
+				}
+
+				// Capture the CardBus memory-window base from the node's `ranges`
+				// (the address OF designated for the card, guaranteed to be
+				// forwarded by the host bridge). Entry: child[3] parent[3] size[2];
+				// pick the 32-bit memory entry (space code 0x02) and take the
+				// parent low address (cell 5).
+				uint32 rng[32];
+				for (int i = 0; i < 32; i++)
+					rng[i] = 0;
+				intptr_t rlen = of_getprop(ch, "ranges", rng, sizeof(rng));
+				if (rlen >= 32) {
+					uint32 rCells = (uint32)rlen / 4;
+					for (uint32 e = 0; e + 8 <= rCells; e += 8) {
+						if (((rng[e] >> 24) & 0x03) == 0x02) {
+							gKernelArgs.arch_args.cardbus_mem_base = rng[e + 5];
+							dprintf("cardbus mem base: 0x%x\n",
+								(unsigned)rng[e + 5]);
+							break;
+						}
+					}
 				}
 			}
 		}

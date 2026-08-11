@@ -41,6 +41,11 @@
 #define MACIO_ATA_CONTROLLER_MODULE_NAME	"busses/ata/macio/driver_v1"
 #define MACIO_ATA_CHANNEL_MODULE_NAME		"busses/ata/macio/channel/v1"
 
+// Kauai/Intrepid ATA (a separate PCI function, "kauai-ata") uses a real PCI
+// interrupt; the boot loader resolved its OpenPIC input from the OF
+// interrupt-map (see arch_platform.cpp / mmu.cpp).
+extern "C" uint32 ppc_get_kauai_ata_irq();
+
 // our private channel-node attributes
 #define MACIO_ATA_REG_OFFSET	"macio_ata/reg_offset"	// uint32, within mac-io
 #define MACIO_ATA_IRQ			"macio_ata/irq"			// uint8
@@ -74,6 +79,10 @@ struct macio_ata_supported_device {
 	uint16	device_id;
 	uint8	channel_count;
 	macio_ata_channel_def channels[MACIO_ATA_MAX_CHANNELS];
+	// true = a standalone PCI ATA function (Kauai/Intrepid "kauai-ata"): map
+	// its own BAR0 (not the mac-io window) and take the IRQ from the PCI
+	// interrupt (loader-resolved), rather than a fixed mac-io cell vector.
+	bool	pci_native;
 };
 
 static macio_ata_supported_device sSupportedDevices[] = {
@@ -95,6 +104,12 @@ static macio_ata_supported_device sSupportedDevices[] = {
 	// cells, so publish only ata-4; probing the absent 0x20000/0x21000 cells
 	// touches bogus mac-io registers and corrupts memory (confirmed on a G3).
 	{ 0x106b, 0x0025, 1, {{ 0x1f000, 0x13 }} },
+	// Intrepid/UniNorth-2 "Kauai" ATA/100 (12" PowerBook G4 = PowerBook6,4 and
+	// other late G4 portables/desktops): a SEPARATE PCI function
+	// (0x106b:0x003b, compatible "kauai-ata", class 0xff) rather than a mac-io
+	// cell. Its 16 KB BAR0 holds the task-file registers at offset 0x2000 (same
+	// 16-byte spacing). The IRQ is a real PCI interrupt resolved by the loader.
+	{ 0x106b, 0x003b, 1, {{ 0x2000, 0 }}, true },
 	{ 0, 0, 0, {} }
 };
 
@@ -487,8 +502,15 @@ macio_ata_init_controller(device_node* node, void** cookie)
 	// map the whole mac-io register space (uncached device memory)
 	phys_addr_t physicalBase = pciInfo.u.h0.base_registers[0];
 	size_t size = pciInfo.u.h0.base_register_sizes[0];
-	if (size < MACIO_ATA_IDE1_OFFSET + 0x1000)
-		size = MACIO_ATA_IDE1_OFFSET + 0x1000;
+	if (!controller->supported->pci_native) {
+		// mac-io cells sit at large fixed offsets within the shared mac-io
+		// register window - make sure the whole window is mapped.
+		if (size < MACIO_ATA_IDE1_OFFSET + 0x1000)
+			size = MACIO_ATA_IDE1_OFFSET + 0x1000;
+	} else if (size < 0x3000) {
+		// Kauai ATA: its own BAR (16 KB); the task-file lives at +0x2000.
+		size = 0x3000;
+	}
 
 	void* virtualBase = NULL;
 	controller->register_area = map_physical_memory("mac-io ata registers",
@@ -500,6 +522,11 @@ macio_ata_init_controller(device_node* node, void** cookie)
 		return status;
 	}
 	controller->register_base = (addr_t)virtualBase;
+
+	if (controller->supported->pci_native) {
+		dprintf("macio_ata: Kauai/Intrepid ATA, BAR0 %#" B_PRIxPHYSADDR
+			", IRQ %u\n", physicalBase, (unsigned)ppc_get_kauai_ata_irq());
+	}
 
 	dprintf("macio_ata: controller at mac-io %#" B_PRIxPHYSADDR " (%u channel"
 		"%s)\n", physicalBase, controller->supported->channel_count,
@@ -552,8 +579,16 @@ macio_ata_register_child_devices(void* cookie)
 
 	for (uint8 i = 0; i < controller->supported->channel_count; i++) {
 		const macio_ata_channel_def& def = controller->supported->channels[i];
+		uint8 irq = def.irq;
+		if (controller->supported->pci_native) {
+			// Kauai: use the real PCI interrupt the loader resolved from the OF
+			// interrupt-map, not a fixed mac-io cell vector.
+			uint32 kirq = ppc_get_kauai_ata_irq();
+			if (kirq != 0 && kirq < 0xff)
+				irq = (uint8)kirq;
+		}
 		CHECK_RET(macio_ata_publish_channel(controller->node, def.reg_offset,
-			def.irq, i));
+			irq, i));
 	}
 
 	return B_OK;
