@@ -888,6 +888,13 @@ adb_gpio1_interrupt(void* arg)
 	if ((level & KEYLARGO_GPIO_LEVEL) != 0)
 		return B_UNHANDLED_INTERRUPT;		// line not asserted
 
+	// Defer if a host-initiated PMU transaction (e.g. the battery poll) is in
+	// flight: draining pending data here drives the bus concurrently with that
+	// transaction and desyncs the PMU -> the machine powers off. The line is
+	// level-triggered, so this fires again and drains once the transaction ends.
+	if (sPmuState != PMU_IDLE)
+		return B_HANDLED_INTERRUPT;
+
 	uint8 buf[32];
 	int idx = pmu_read_pending(buf);
 	if (idx > 0) {
