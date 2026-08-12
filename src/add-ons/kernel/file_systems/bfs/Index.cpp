@@ -231,6 +231,35 @@ Index::Update(Transaction& transaction, const char* name, int32 type,
 	if (type == B_MIME_STRING_TYPE)
 		type = B_STRING_TYPE;
 
+	// BFS keeps fixed-size numeric index keys in canonical LITTLE-ENDIAN byte
+	// order on disk (compareKeys() converts back when reading). Convert the
+	// caller's host-endian integer/float keys to that order up front, so every
+	// downstream user -- the identical-key check below, the live-query
+	// notification, and the B+tree itself -- operates on the on-disk order.
+	// No-op on little-endian hosts (x86/arm64, incl. the image build tools);
+	// this is what keeps a tools-built image consistent when the big-endian ppc
+	// kernel reads and writes its indices. uint64 buffers for natural alignment.
+	uint64 oldKeyBuffer;
+	uint64 newKeyBuffer;
+	if (type != B_STRING_TYPE) {
+		if (oldKey != NULL && oldLength == 8) {
+			oldKeyBuffer = B_HOST_TO_LENDIAN_INT64(*(const uint64*)oldKey);
+			oldKey = (const uint8*)&oldKeyBuffer;
+		} else if (oldKey != NULL && oldLength == 4) {
+			*(uint32*)&oldKeyBuffer = B_HOST_TO_LENDIAN_INT32(
+				*(const uint32*)oldKey);
+			oldKey = (const uint8*)&oldKeyBuffer;
+		}
+		if (newKey != NULL && newLength == 8) {
+			newKeyBuffer = B_HOST_TO_LENDIAN_INT64(*(const uint64*)newKey);
+			newKey = (const uint8*)&newKeyBuffer;
+		} else if (newKey != NULL && newLength == 4) {
+			*(uint32*)&newKeyBuffer = B_HOST_TO_LENDIAN_INT32(
+				*(const uint32*)newKey);
+			newKey = (const uint8*)&newKeyBuffer;
+		}
+	}
+
 	// If the two keys are identical, don't do anything - only compare if the
 	// type has been set, until we have a real type code, we can't do much
 	// about the comparison here
@@ -266,8 +295,19 @@ Index::Update(Transaction& transaction, const char* name, int32 type,
 		status = tree->Remove(transaction, (const uint8*)oldKey, oldLength,
 			inode->ID());
 		if (status == B_ENTRY_NOT_FOUND) {
-			// That's not nice, but no reason to let the whole thing fail
-			INFORM(("Could not find value in index \"%s\"!\n", name));
+			// That's not nice, but no reason to let the whole thing fail.
+			// On a volume whose indices are out of sync this fires on every
+			// update; since it is logged, and the syslog file's own size/
+			// last_modified index updates then fail the same way, it feeds
+			// back into itself and floods the log -- pegging the CPU/I-O and
+			// (on ppc laptops) starving the PMU into a power-off. Rate-limit it.
+			static bigtime_t sLastInform = 0;
+			bigtime_t now = system_time();
+			if (now - sLastInform > 10000000LL) {
+				sLastInform = now;
+				INFORM(("Could not find value in index \"%s\"! (out-of-sync "
+					"index; further such messages suppressed for 10s)\n", name));
+			}
 		} else if (status != B_OK)
 			return status;
 	}

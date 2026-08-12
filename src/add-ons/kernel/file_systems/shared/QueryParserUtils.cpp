@@ -9,6 +9,8 @@
 // This needs to be the first include because of the fs shell API wrapper
 #include <algorithm>
 
+#include <ByteOrder.h>
+
 #include <file_systems/QueryParserUtils.h>
 
 #ifndef FS_SHELL
@@ -59,19 +61,31 @@ int
 compareKeys(uint32 type, const void* key1, size_t length1, const void* key2,
 	size_t length2)
 {
+	// BFS stores fixed-size numeric index keys in canonical LITTLE-ENDIAN byte
+	// order on disk (see the matching B_HOST_TO_LENDIAN at every key-formation
+	// site). Convert to host order before comparing. On little-endian hosts
+	// these macros are no-ops (x86/arm64 unchanged); on big-endian ppc they
+	// byte-swap, so an image built by the (little-endian) tools stays
+	// consistent when read/written by the ppc kernel.
 	switch (type) {
 		case B_INT32_TYPE:
-			return compare_integral(*(int32*)key1, *(int32*)key2);
+			return compare_integral((int32)B_LENDIAN_TO_HOST_INT32(
+				*(uint32*)key1), (int32)B_LENDIAN_TO_HOST_INT32(*(uint32*)key2));
 		case B_UINT32_TYPE:
-			return compare_integral(*(uint32*)key1, *(uint32*)key2);
+			return compare_integral(B_LENDIAN_TO_HOST_INT32(*(uint32*)key1),
+				B_LENDIAN_TO_HOST_INT32(*(uint32*)key2));
 		case B_INT64_TYPE:
-			return compare_integral(*(int64*)key1, *(int64*)key2);
+			return compare_integral((int64)B_LENDIAN_TO_HOST_INT64(
+				*(uint64*)key1), (int64)B_LENDIAN_TO_HOST_INT64(*(uint64*)key2));
 		case B_UINT64_TYPE:
-			return compare_integral(*(uint64*)key1, *(uint64*)key2);
+			return compare_integral(B_LENDIAN_TO_HOST_INT64(*(uint64*)key1),
+				B_LENDIAN_TO_HOST_INT64(*(uint64*)key2));
 		case B_FLOAT_TYPE:
-			return compare_integral(*(float*)key1, *(float*)key2);
+			return compare_integral(B_LENDIAN_TO_HOST_FLOAT(*(float*)key1),
+				B_LENDIAN_TO_HOST_FLOAT(*(float*)key2));
 		case B_DOUBLE_TYPE:
-			return compare_integral(*(double*)key1, *(double*)key2);
+			return compare_integral(B_LENDIAN_TO_HOST_DOUBLE(*(double*)key1),
+				B_LENDIAN_TO_HOST_DOUBLE(*(double*)key2));
 		case B_STRING_TYPE:
 		case B_MIME_STRING_TYPE:
 		{
