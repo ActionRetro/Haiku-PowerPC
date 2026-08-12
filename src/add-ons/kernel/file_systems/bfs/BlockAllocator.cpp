@@ -712,8 +712,15 @@ BlockAllocator::_Initialize(BlockAllocator* allocator)
 		int32 count = (numBits + 31) / 32;
 
 		for (int32 k = 0; k < count; k++) {
+			// The bitmap is little-endian on disk; convert each 32-bit chunk to
+			// host order before testing bits so this free-range scan is correct
+			// on big-endian hosts. Otherwise the fLargest*/fFreeBits hints are
+			// wrong at partially-used boundary words and AllocateBlocks later
+			// hands out already-allocated blocks ("blocks already set!"). No-op
+			// on x86; matches NextFree()/IsUsed().
+			uint32 chunk = BFS_ENDIAN_TO_HOST_INT32(buffer[k]);
 			for (int32 j = 0; j < 32 && bit < numBits; j++, bit++) {
-				if (buffer[k] & (1UL << j)) {
+				if (chunk & (1UL << j)) {
 					// block is in use
 					if (range > 0) {
 						groups[i].AddFreeRange(start, range);
