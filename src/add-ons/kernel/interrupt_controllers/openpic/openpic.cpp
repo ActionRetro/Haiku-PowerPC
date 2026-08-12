@@ -155,6 +155,19 @@ openpic_enable_irq(openpic_info *info, int irq, int type)
 	// Clear mask, sense and polarity, then program per type. mac-io level
 	// interrupts are active-low; treat edge interrupts as rising (active-high).
 	x &= ~(OPENPIC_IMASK | OPENPIC_SENSE_LEVEL | OPENPIC_POLARITY_POSITIVE);
+	// The VIA-PMU interrupts (mac-io: byte/SR IRQ 0x19 and the extint-gpio1
+	// "PMU has data" line 0x2f - see the adb driver) are timing-critical: the
+	// PMU is a byte-clocked state machine and desyncs (cutting power) if the
+	// host is too slow to service it. Because the ppc external-interrupt
+	// dispatch runs handlers with interrupts disabled, a source can only be
+	// serviced promptly by being returned first from the MPIC IACK, i.e. by
+	// having a higher priority. Give the PMU IRQs the top priority so a heavy
+	// device interrupt load (e.g. WiFi traffic) cannot starve PMU servicing.
+	// The default source priority is 8 (see openpic_init).
+	if (irq == 0x19 || irq == 0x2f) {
+		x &= ~OPENPIC_PRIORITY_MASK;
+		x |= 15 << OPENPIC_PRIORITY_SHIFT;
+	}
 	if (type == IRQ_TYPE_LEVEL)
 		x |= OPENPIC_SENSE_LEVEL;		// level, active-low (polarity bit clear)
 	else
