@@ -145,9 +145,17 @@ CommitTransactionHandler::~CommitTransactionHandler()
 	for (int32 i = 0; i < count; i++) {
 		Package* package = fPackagesToActivate.ItemAt(i);
 		if (fPackagesAlreadyAdded.find(package)
-				== fPackagesAlreadyAdded.end()) {
-			delete package;
+				!= fPackagesAlreadyAdded.end()) {
+			continue;
 		}
+		// On a failed commit the package may already have been added to the
+		// (not-yet-detached) volume state; in that case it is owned by
+		// fVolumeState and deleting it here too would double-free.
+		if (fVolumeState != NULL
+				&& fVolumeState->FindPackage(package->NodeRef()) == package) {
+			continue;
+		}
+		delete package;
 	}
 
 	delete fVolumeState;
