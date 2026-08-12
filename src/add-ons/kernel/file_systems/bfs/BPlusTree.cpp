@@ -2164,7 +2164,12 @@ BPlusTree::Remove(Transaction& transaction, const uint8* key, uint16 keyLength,
 					"allowed, inode %" B_PRIdOFF "!\n", fStream->ID()));
 				RETURN_ERROR(B_ERROR);
 			} else {
-				if (node->Values()[nodeAndKey.keyIndex] != value)
+				// On-disk values are little-endian; convert before comparing to
+				// the caller's host-order value. Without this the compare never
+				// matches on big-endian ppc and Remove wrongly returns
+				// B_ENTRY_NOT_FOUND. No-op on little-endian hosts.
+				if (BFS_ENDIAN_TO_HOST_INT64(node->Values()[nodeAndKey.keyIndex])
+						!= value)
 					return B_ENTRY_NOT_FOUND;
 
 				// If we will remove the last key, the iterator will be set
