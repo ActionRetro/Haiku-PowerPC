@@ -2090,7 +2090,12 @@ BPlusTree::_RemoveKey(bplustree_node* node, uint16 index)
 	uint8* keys = node->Keys();
 
 	node->all_key_count = HOST_ENDIAN_TO_BFS_INT16(node->NumKeys() - 1);
-	node->all_key_length = HOST_ENDIAN_TO_BFS_INT64(
+	// all_key_length is a uint16 field: use the 16-bit swap. The 64-bit swap
+	// here was a no-op on little-endian but stored garbage on big-endian ppc
+	// (truncating a byte-swapped 64-bit value), which then produced a bogus
+	// memmove length below and faulted. Matches AllKeyLength() and the other
+	// all_key_length writers.
+	node->all_key_length = HOST_ENDIAN_TO_BFS_INT16(
 		node->AllKeyLength() - length);
 
 	Unaligned<off_t>* newValues = node->Values();
