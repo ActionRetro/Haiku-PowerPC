@@ -574,6 +574,7 @@ struct bwi_softc {
 
 	struct callout		sc_calib_ch;
 	struct callout		sc_watchdog_timer;
+	struct callout		sc_poll_ch;
 
 	struct bwi_regwin	*sc_cur_regwin;
 	struct bwi_regwin	sc_com_regwin;
@@ -608,6 +609,11 @@ struct bwi_softc {
 	struct bwi_txstats_data	*sc_txstats;
 
 	int			sc_tx_timer;
+	/* RX-DMA hang detection (ppc): garbage vs valid RX frames seen since the
+	   last watchdog tick, so the watchdog can reset a wedged radio before it
+	   trips the PMU (see bwi_watchdog / bwi_rxeof32). */
+	int			sc_rx_badcnt;
+	int			sc_rx_goodcnt;
 	const struct ieee80211_rate_table *sc_rates;
 
 	struct bwi_tx_radiotap_hdr sc_tx_th;

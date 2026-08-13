@@ -110,6 +110,8 @@ static int	bwi_raw_xmit(struct ieee80211_node *, struct mbuf *,
 			const struct ieee80211_bpf_params *);
 static void	bwi_watchdog(void *);
 static void	bwi_scan_start(struct ieee80211com *);
+
+static void	bwi_poll(void *);
 static void	bwi_getradiocaps(struct ieee80211com *, int, int *,
 		    struct ieee80211_channel[]);
 static void	bwi_set_channel(struct ieee80211com *);
@@ -450,6 +452,7 @@ bwi_attach(struct bwi_softc *sc)
 		goto fail;
 
 	callout_init_mtx(&sc->sc_watchdog_timer, &sc->sc_mtx, 0);
+	callout_init(&sc->sc_poll_ch, 1);
 
 	/*
 	 * Setup ratesets, phytype, channels and get MAC address
@@ -1273,6 +1276,7 @@ bwi_init_statechg(struct bwi_softc *sc, int statechg)
 	sc->sc_flags &= ~BWI_F_STOP;
 	sc->sc_flags |= BWI_F_RUNNING;
 	callout_reset(&sc->sc_watchdog_timer, hz, bwi_watchdog, sc);
+	callout_reset(&sc->sc_poll_ch, 1, bwi_poll, sc);
 
 	/* Enable intrs */
 	bwi_enable_intrs(sc, BWI_INIT_INTRS);
@@ -1441,6 +1445,24 @@ bwi_watchdog(void *arg)
 		counter_u64_add(sc->sc_ic.ic_oerrors, 1);
 		taskqueue_enqueue(sc->sc_tq, &sc->sc_restart_task);
 	}
+
+	/* RX-DMA hang recovery (ppc): if a sustained run of zero-length garbage
+	   frames arrived with no valid frame to clear it, the RX engine has
+	   wedged - reset the radio (same path as a TX timeout) before the wedged
+	   radio trips the PMU and powers the machine off. A valid frame (incl. AP
+	   beacons while associated) clears the count, so this only fires on a
+	   genuinely stuck engine. */
+	if (sc->sc_rx_goodcnt > 0) {
+		sc->sc_rx_badcnt = 0;
+	} else if (sc->sc_rx_badcnt >= 16) {
+		device_printf(sc->sc_dev,
+		    "RX DMA hang (%d garbage frames, 0 valid); resetting radio\n",
+		    sc->sc_rx_badcnt);
+		sc->sc_rx_badcnt = 0;
+		taskqueue_enqueue(sc->sc_tq, &sc->sc_restart_task);
+	}
+	sc->sc_rx_goodcnt = 0;
+
 	callout_reset(&sc->sc_watchdog_timer, hz, bwi_watchdog, sc);
 }
 
@@ -1497,8 +1519,35 @@ bwi_stop_locked(struct bwi_softc *sc, int statechg)
 
 	sc->sc_tx_timer = 0;
 	callout_stop(&sc->sc_watchdog_timer);
+	callout_stop(&sc->sc_poll_ch);
 	sc->sc_flags &= ~BWI_F_RUNNING;
 }
+
+static void
+bwi_poll(void *xsc)
+{
+	struct bwi_softc *sc = xsc;
+
+	// The CardBus card's INTA is not delivered on this ppc host (the OpenPIC
+	// input from the OF interrupt-map never fires -- same as the OHCI USB
+	// case). bwi_intr() would early-return because the main INTR_STATUS bit
+	// that gates TX/RX processing is only latched by a real interrupt, so poll
+	// the chip's TX-status / RX rings DIRECTLY to reap completions and free TX
+	// ring slots. Interim workaround until CardBus interrupt routing works.
+	BWI_LOCK(sc);
+	if ((sc->sc_flags & (BWI_F_RUNNING | BWI_F_STOP)) == BWI_F_RUNNING) {
+		sc->sc_rxeof(sc);
+		if (sc->sc_txstats != NULL)
+			sc->sc_txeof_status(sc);
+		else
+			bwi_txeof(sc);
+	}
+	BWI_UNLOCK(sc);
+
+	if ((sc->sc_flags & (BWI_F_RUNNING | BWI_F_STOP)) == BWI_F_RUNNING)
+		callout_reset(&sc->sc_poll_ch, 1, bwi_poll, sc);
+}
+
 
 void
 bwi_intr(void *xsc)
@@ -2622,13 +2671,15 @@ bwi_rxeof(struct bwi_softc *sc, int end_idx)
 
 		buflen = le16toh(hdr->rxh_buflen);
 		if (buflen < BWI_FRAME_MIN_LEN(wh_ofs)) {
-			device_printf(sc->sc_dev,
-			    "%s: zero length data, hdr_extra %d\n",
-			    __func__, hdr_extra);
+			/* A wedged RX-DMA engine floods these; count it (the watchdog
+			   resets the radio if valid frames never resume) and drop it
+			   silently rather than flooding the log. */
+			sc->sc_rx_badcnt++;
 			counter_u64_add(ic->ic_ierrors, 1);
 			m_freem(m);
 			goto next;
 		}
+		sc->sc_rx_goodcnt++;
 
 	        bcopy((uint8_t *)(hdr + 1) + hdr_extra, &plcp, sizeof(plcp));	
 		rssi = bwi_calc_rssi(sc, hdr);
