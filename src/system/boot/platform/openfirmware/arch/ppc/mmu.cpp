@@ -1436,6 +1436,74 @@ arch_mmu_init(void)
 			}
 		}
 
+		// Capture the USB controller IRQs from OF. Each OHCI/EHCI companion is a
+		// PCI function whose interrupt_line is an unrouted placeholder; resolve
+		// each one's real OpenPIC input through its parent PCI bridge's
+		// interrupt-map (as for the GMAC/ATA above) so the OHCI driver can run
+		// interrupt-driven instead of polling (fixes flaky USB writes).
+		gKernelArgs.arch_args.usb_irq_count = 0;
+		for (intptr_t br = root != -1 ? of_child(root) : 0;
+				br != 0 && br != -1; br = of_peer(br)) {
+			char brType[32];
+			brType[0] = '\0';
+			of_getprop(br, "device_type", brType, sizeof(brType));
+			if (strcmp(brType, "pci") != 0)
+				continue;
+			for (intptr_t ch = of_child(br); ch != 0 && ch != -1;
+					ch = of_peer(ch)) {
+				char chType[32];
+				chType[0] = '\0';
+				of_getprop(ch, "device_type", chType, sizeof(chType));
+				if (strcmp(chType, "usb") != 0)
+					continue;
+				uint32 intr[8];
+				for (int i = 0; i < 8; i++)
+					intr[i] = 0;
+				intptr_t len = of_getprop(ch, "interrupts", intr,
+					sizeof(intr));
+				uint32 resolvedIRQ = (len >= 4) ? intr[0] : 0;
+				uint32 childReg[4];
+				for (int i = 0; i < 4; i++)
+					childReg[i] = 0;
+				of_getprop(ch, "reg", childReg, sizeof(childReg));
+				uint32 imap[64];
+				for (int i = 0; i < 64; i++)
+					imap[i] = 0;
+				uint32 imask[4] = { 0, 0, 0, 0 };
+				intptr_t maplen = of_getprop(br, "interrupt-map", imap,
+					sizeof(imap));
+				of_getprop(br, "interrupt-map-mask", imask, sizeof(imask));
+				if (maplen >= 28) {
+					uint32 nCells = (uint32)maplen / 4;
+					uint32 keyHi = childReg[0] & imask[0];
+					uint32 keyIntr = resolvedIRQ & imask[3];
+					for (uint32 e = 0; e + 7 <= nCells; e += 7) {
+						if ((imap[e + 0] & imask[0]) == keyHi
+								&& (imap[e + 3] & imask[3]) == keyIntr) {
+							resolvedIRQ = imap[e + 5];
+							break;
+						}
+					}
+				}
+				uint32 count = gKernelArgs.arch_args.usb_irq_count;
+				if (resolvedIRQ != 0 && count < 8) {
+					uint32 reg0 = childReg[0];
+					uint32 addr = (((reg0 >> 16) & 0xff) << 16)
+						| (((reg0 >> 11) & 0x1f) << 8)
+						| ((reg0 >> 8) & 0x7);
+					gKernelArgs.arch_args.usb_irqs[count].address = addr;
+					gKernelArgs.arch_args.usb_irqs[count].irq = resolvedIRQ;
+					gKernelArgs.arch_args.usb_irq_count = count + 1;
+					dprintf("usb irq: %02x:%02x.%x pin %u -> openpic %u\n",
+						(unsigned)((reg0 >> 16) & 0xff),
+						(unsigned)((reg0 >> 11) & 0x1f),
+						(unsigned)((reg0 >> 8) & 0x7),
+						(unsigned)((len >= 4) ? intr[0] : 0),
+						(unsigned)resolvedIRQ);
+				}
+			}
+		}
+
 		// Capture the CardBus (PC Card) bridge IRQ from OF. Its interrupt_line is
 		// unrouted; the inserted card's INTA routes through the bridge, so resolve
 		// the cardbus node's interrupt through the parent PCI bridge's
@@ -1608,14 +1676,16 @@ arch_mmu_init(void)
 				dprintf("airport: could not open mac-io %s\n", macioPath);
 				continue;
 			}
-			// Correct order (from the OF method decompile): enable-cardslot
-			// asserts reset + configures the radio GPIOs, then
-			// init-cardslot-radio writes 0x1a3e0 and RELEASES the reset last.
-			intptr_t r1 = of_call_method((uint32_t)ih, "enable-cardslot", 0, 0);
-			intptr_t r2 = of_call_method((uint32_t)ih, "init-cardslot-radio",
-				0, 0);
-			dprintf("airport: OF %s enable-cardslot=%ld "
-				"init-cardslot-radio=%ld\n", macioPath, (long)r1, (long)r2);
+			// Do NOT call the OF enable-cardslot / init-cardslot-radio methods.
+			// OpenFirmware has already powered the AirPort radio; re-invoking
+			// these (re-asserting the radio reset / re-poking the KeyLargo GPIOs)
+			// puts this PowerBook (Intrepid) into a state where the PMU
+			// autonomously powers the machine off every few minutes. Skipping
+			// them keeps WiFi working (via OF power) and fixes the random
+			// shutoffs. See the AirPort bring-up history in git.
+			dprintf("airport: OF enable-cardslot skipped for %s (OF already "
+				"powered the radio; calling it trips the PMU power-off)\n",
+				macioPath);
 			of_close(ih);
 		}
 	}
