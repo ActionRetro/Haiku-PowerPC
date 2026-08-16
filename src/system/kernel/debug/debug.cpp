@@ -1678,6 +1678,14 @@ void
 debug_stop_screen_debug_output(void)
 {
 	sDebugScreenEnabled = false;
+#ifdef __POWERPC__
+	/* ppc: also stop the OpenFirmware on-panel console. On ppc the kernel's
+	 * "serial" debug output is OpenFirmware stdout == the framebuffer text
+	 * console; after app_server/accelerant reprograms the framebuffer, those
+	 * OF writes garble the live desktop. This runs at app_server's framebuffer
+	 * takeover (_user_frame_buffer_update). Debug output still reaches syslog. */
+	sSerialDebugEnabled = false;
+#endif
 }
 
 
