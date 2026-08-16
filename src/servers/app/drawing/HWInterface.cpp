@@ -673,8 +673,27 @@ HWInterface::_CopyToFront(uint8* src, uint32 srcBPR, int32 x, int32 y,
 				dst += y * dstBPR + x * 4;
 				// copy
 				for (; y <= bottom; y++) {
+#ifdef __POWERPC__
+					// ppc: the nvidia framebuffer wants A,R,G,B byte order,
+					// while the back buffer (and every other Haiku target) is
+					// B,G,R,A - the NV endian switch reverses the aperture.
+					// Measured on hardware: writing $AARRGGBB as a word, which
+					// lands as A,R,G,B, renders correct colours; writing
+					// B,G,R,A renders green as magenta and red as cyan.
+					// Reverse each pixel here, the single choke point for all
+					// framebuffer writes. gcc emits stwbrx, so this costs one
+					// instruction per pixel over the plain copy.
+					{
+						const uint32* s32 = (const uint32*)src;
+						uint32* d32 = (uint32*)dst;
+						int32 pixels = bytes / 4;
+						for (int32 i = 0; i < pixels; i++)
+							d32[i] = __builtin_bswap32(s32[i]);
+					}
+#else
 					// bytes is guaranteed to be multiple of 4
 					memcpy(dst, src, bytes);
+#endif
 					dst += dstBPR;
 					src += srcBPR;
 				}
