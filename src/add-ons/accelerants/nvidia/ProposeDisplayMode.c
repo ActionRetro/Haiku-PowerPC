@@ -665,5 +665,33 @@ create_mode_list(void)
 		src++;
 	}
 
+#ifdef __POWERPC__
+	/* ppc rung 2: force a single mode matching the inherited OF panel geometry
+	 * at 32-bit. SetDisplayMode skips PLL+timing, so the timing below is
+	 * synthetic (never written to hw); it only needs to pass PROPOSE. */
+	if (si->ppc_of_width > 0 && si->ppc_of_height > 0) {
+		display_mode m;
+		uint32 w = si->ppc_of_width, h = si->ppc_of_height;
+		memset(&m, 0, sizeof(m));
+		/* Panel native 1024x768@60 timing, read from OF's FP registers on this
+		 * albook (FP_HTOTAL=1343, FP_HSYNC 1048-1184, FP_VTOTAL=805, FP_VSYNC
+		 * 771-777). We program crtc2 with this so its raster matches the panel. */
+		m.timing.h_display = w;
+		m.timing.h_sync_start = 1048;
+		m.timing.h_sync_end = 1184;
+		m.timing.h_total = 1344;
+		m.timing.v_display = h;
+		m.timing.v_sync_start = 771;
+		m.timing.v_sync_end = 777;
+		m.timing.v_total = 806;
+		m.timing.pixel_clock = 65000;
+		m.space = B_RGB32_LITTLE;
+		m.virtual_width = w;
+		m.virtual_height = h;
+		my_mode_list[0] = m;
+		si->mode_count = 1;
+		LOG(1, ("ppc rung 2: single mode %ldx%ld @32\n", (long)w, (long)h));
+	}
+#endif
 	return B_OK;
 }

@@ -18,6 +18,13 @@ area_id regs_area;
 display_mode *my_mode_list;
 area_id	my_mode_list_area;
 int accelerantIsClone;
+#ifdef __POWERPC__
+/* ppc: software shadow of VGA CRTC/SEQ/GRPH registers (byte data-port reads
+ * return 0 on this hw, so reads come from here; writes update this + hardware) */
+uint8 ppc_crtc_shadow[2][256];
+uint8 ppc_seq_shadow[256];
+uint8 ppc_grph_shadow[256];
+#endif
 
 crtc_interrupt_enable	head1_interrupt_enable;
 crtc_update_fifo		head1_update_fifo;

@@ -327,6 +327,12 @@ typedef struct {
 	bool haiku_prefs_used;	/* signals use of Haiku ScreenPrefs app for special modes */
 	bool Haiku_switch_head;	/* signals Haiku ScreenPrefs panel want inverted mode later on */
 
+	/* ppc: OpenFirmware framebuffer geometry - the panel mode we inherit */
+	int32 ppc_of_width;
+	int32 ppc_of_height;
+	int32 ppc_of_depth;
+	int32 ppc_of_bytes_per_row;
+
   /*frame buffer config - for BDirectScreen*/
 	frame_buffer_config fbc;	/* bytes_per_row and start of frame buffer: head1 */
 	accelerant_device_info adi;	/* as returned by hook GET_ACCELERANT_DEVICE_INFO */

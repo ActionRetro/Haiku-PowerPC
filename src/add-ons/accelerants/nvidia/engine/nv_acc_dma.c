@@ -1425,7 +1425,7 @@ static void nv_start_dma(void)
 		if (si->ps.card_arch < NV40A)
 		{
 			/* some CPU's support out-of-order processing (WinChip/Cyrix). Flush them. */
-			__asm__ __volatile__ ("lock; addl $0,0(%%esp)": : :"memory");
+			__asm__ __volatile__ ("sync": : :"memory");
 			/* read a non-cached adress to flush the cash */
 			dummy = ACCR(STATUS);
 		}

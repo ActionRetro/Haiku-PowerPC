@@ -1632,6 +1632,11 @@ static status_t nvxx_general_powerup()
 	/* dump config space as it is after a possible coldstart attempt */
 	if (si->settings.logmask & 0x80000000) nv_dump_configuration_space();
 
+#ifdef __POWERPC__
+	/* ppc crtc1 test: the test-pattern run proved the panel is on crtc1 (we
+	 * fully programmed crtc2 to 32bpp and the panel stayed at OF 8bpp). Use
+	 * the DEFAULT routing (crtc2_prim stays false) so head1 -> crtc1. */
+#endif
 	/* setup CRTC and DAC functions access: determined in fake_panel_start */
 	setup_virtualized_heads(si->ps.crtc2_prim);
 

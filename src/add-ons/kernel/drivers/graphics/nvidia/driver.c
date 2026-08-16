@@ -17,6 +17,10 @@
 #include <SupportDefs.h>
 #include <ISA.h>
 #include <PCI.h>
+#ifdef __POWERPC__
+#include <boot_item.h>
+#include <frame_buffer_console.h>
+#endif
 #include <OS.h>
 #include <directories.h>
 #include <driver_settings.h>
@@ -74,6 +78,17 @@ static void probe_devices(void);
 static int32 nv_interrupt(void *data);
 
 static DeviceData		*pd;
+#ifdef __POWERPC__
+/* On PPC the CPU-physical ("host") BAR view differs from the PCI-bus view
+ * because of UniNorth address translation; map_physical_memory() needs the
+ * host view. On x86 the two views are identical. */
+#	define NV_BAR_HOST(h0, idx)	((h0).base_registers[(idx)])
+#	define NV_ROM_HOST(h0)		((h0).rom_base)
+#else
+#	define NV_BAR_HOST(h0, idx)	((h0).base_registers_pci[(idx)])
+#	define NV_ROM_HOST(h0)		((h0).rom_base_pci)
+#endif
+
 static isa_module_info	*isa_bus = NULL;
 static pci_module_info	*pci_bus = NULL;
 static agp_gart_module_info *agp_bus = NULL;
@@ -531,6 +546,24 @@ map_device(device_info *di)
 	system_info sysinfo;
 
 	CALLED();
+#ifdef __POWERPC__
+	/* ppc rung 2: capture the OpenFirmware framebuffer geometry - this is the
+	 * panel mode we inherit (we don't reprogram CRTC timing). */
+	{
+		struct frame_buffer_boot_info *fbInfo =
+			(struct frame_buffer_boot_info *)get_boot_item(FRAME_BUFFER_BOOT_INFO, NULL);
+		if (fbInfo != NULL) {
+			si->ppc_of_width = fbInfo->width;
+			si->ppc_of_height = fbInfo->height;
+			si->ppc_of_depth = fbInfo->depth;
+			si->ppc_of_bytes_per_row = fbInfo->bytes_per_row;
+			dprintf("nvidia/ppc: OF fb %ldx%ld depth=%ld pitch=%ld\n",
+				(long)fbInfo->width, (long)fbInfo->height,
+				(long)fbInfo->depth, (long)fbInfo->bytes_per_row);
+		} else
+			dprintf("nvidia/ppc: no FRAME_BUFFER_BOOT_INFO!\n");
+	}
+#endif
 	/* variables for making copy of ROM */
 	uint8* rom_temp;
 	area_id rom_area = -1;
@@ -575,16 +608,38 @@ map_device(device_info *di)
 	/* get a virtual memory address for the registers*/
 	si->regs_area = map_physical_memory(
 		buffer,
-		/* WARNING: Nvidia needs to map regs as viewed from PCI space! */
-		di->pcii.u.h0.base_registers_pci[registers],
+		NV_BAR_HOST(di->pcii.u.h0, registers),
 		di->pcii.u.h0.base_register_sizes[registers],
+#ifdef __POWERPC__
+		/* ppc: registers MUST be uncached+guarded - the default (cached)
+		 * mapping returns stale data on reads and buffers writes, corrupting
+		 * all CRTC/DAC register programming. B_UNCACHED_MEMORY sets I=1,G=1. */
+		B_ANY_KERNEL_ADDRESS | B_UNCACHED_MEMORY,
+#else
 		B_ANY_KERNEL_ADDRESS,
+#endif
 		B_CLONEABLE_AREA | B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA,
 		(void **)&(di->regs));
 	si->clone_bugfix_regs = (uint32 *) di->regs;
 
 	/* if mapping registers to vmem failed then pass on error */
 	if (si->regs_area < 0) return si->regs_area;
+
+#ifdef __POWERPC__
+	/* Switch the NV register aperture to big-endian so the little-endian-
+	 * assuming register code (here and in the accelerant) reads/writes
+	 * registers correctly on this big-endian CPU. PMC offset 0x0004 is the
+	 * endian control; 0x01000001 is byte-palindromic so the store takes
+	 * effect no matter the current mode (same trick X.org/nouveau use on
+	 * PPC Macs). OF may already have set this. */
+	{
+		volatile uint32 *pmc = (volatile uint32 *)di->regs;
+		if ((pmc[0x0004 / 4] & 0x01000001) != 0x01000001) {
+			pmc[0x0004 / 4] = 0x01000001;
+			__asm__ __volatile__ ("eieio" : : : "memory");
+		}
+	}
+#endif
 
 	/* work out a name for the ROM mapping*/
 	sprintf(buffer, DEVICE_FORMAT " rom",
@@ -598,6 +653,17 @@ map_device(device_info *di)
 	 * confirmed NV28 and NV34 to use upper part of shadowed ROM for scratch purposes,
 	 * however the actual ROM content (so the used part) is intact (confirmed). */
 	tmpROMshadow = get_pci(NVCFG_ROMSHADOW, 4);
+#ifdef __POWERPC__
+	/* ppc rung-1 diagnostic: prove the big-endian register switch + host-view
+	 * BAR mapping. NV_PMC_BOOT_0 (reg offset 0) holds the chip id/arch/rev; a
+	 * correct FX Go5200 reads ~0x034x00xx. PFB_BOOT_0 (0x100000) = RAM cfg. */
+	{
+		volatile uint32 *r = (volatile uint32 *)di->regs;
+		dprintf("nvidia/ppc: PMC_BOOT_0=0x%08lx PFB_BOOT_0=0x%08lx\n",
+			(unsigned long)r[0x000000 / 4], (unsigned long)r[0x100000 / 4]);
+	}
+#endif
+
 	/* temporary disable ROM shadowing, we want the guaranteed exact contents of the chip */
 	set_pci(NVCFG_ROMSHADOW, 4, 0);
 
@@ -614,7 +680,7 @@ map_device(device_info *di)
 
 		rom_area = map_physical_memory(
 			buffer,
-			di->pcii.u.h0.rom_base_pci,
+			NV_ROM_HOST(di->pcii.u.h0),
 			di->pcii.u.h0.rom_size,
 			B_ANY_KERNEL_ADDRESS,
 			B_KERNEL_READ_AREA,
@@ -637,31 +703,46 @@ map_device(device_info *di)
 	}
 
 	if (!tmpUlong) {
+#ifdef __POWERPC__
+		/* PPC Macs have no x86 0xc0000 legacy shadow and the NV BIOS is a Mac
+		 * NDRV ROM, not a PCI expansion ROM. Proceed with no ROM image. */
+		rom_area = -1;
+		rom_temp = NULL;
+#else
 		/* ROM was not assigned an adress, fetch it from ISA legacy memory map! */
 		rom_area = map_physical_memory(buffer, 0x000c0000,
 			65536, B_ANY_KERNEL_ADDRESS, B_KERNEL_READ_AREA, (void **)&(rom_temp));
+#endif
 	}
 
 	/* if mapping ROM to vmem failed then clean up and pass on error */
 	if (rom_area < 0) {
+#ifdef __POWERPC__
+		/* Non-fatal on PPC: continue with a blank ROM mirror (no coldstart;
+		 * built-in default PLL/timing limits; inherit OF-programmed panel). */
+		memset(si->rom_mirror, 0, sizeof(si->rom_mirror));
+#else
 		delete_area(si->regs_area);
 		si->regs_area = -1;
 		return rom_area;
+#endif
 	}
 
-	/* dump ROM to file if selected in nvidia.settings
-	 * (ROM always fits in 64Kb: checked TNT1 - FX5950) */
-	if (sSettings.dumprom)
-		dumprom(rom_temp, 65536, di->pcii);
+	if (rom_area >= 0) {
+		/* dump ROM to file if selected in nvidia.settings
+		 * (ROM always fits in 64Kb: checked TNT1 - FX5950) */
+		if (sSettings.dumprom)
+			dumprom(rom_temp, 65536, di->pcii);
 
-	/* make a copy of ROM for future reference */
-	memcpy(si->rom_mirror, rom_temp, 65536);
+		/* make a copy of ROM for future reference */
+		memcpy(si->rom_mirror, rom_temp, 65536);
 
-	/* disable ROM decoding - this is defined in the PCI standard, and delete the area */
-	tmpUlong = get_pci(PCI_rom_base, 4);
-	tmpUlong &= 0xfffffffe;
-	set_pci(PCI_rom_base, 4, tmpUlong);
-	delete_area(rom_area);
+		/* disable ROM decoding - PCI standard - and delete the area */
+		tmpUlong = get_pci(PCI_rom_base, 4);
+		tmpUlong &= 0xfffffffe;
+		set_pci(PCI_rom_base, 4, tmpUlong);
+		delete_area(rom_area);
+	}
 
 	/* restore original ROM shadowing setting to prevent trouble starting (some) cards */
 	set_pci(NVCFG_ROMSHADOW, 4, tmpROMshadow);
@@ -671,12 +752,12 @@ map_device(device_info *di)
 		di->pcii.vendor_id, di->pcii.device_id,
 		di->pcii.bus, di->pcii.device, di->pcii.function);
 
-	physicalAddress = di->pcii.u.h0.base_registers_pci[frame_buffer];
+	physicalAddress = NV_BAR_HOST(di->pcii.u.h0, frame_buffer);
 	if ((di->pcii.u.h0.base_register_flags[frame_buffer] & PCI_address_type)
 			== PCI_address_type_64) {
 		TRACE("framebuffer is 64 bit\n");
 		physicalAddress
-			|= (uint64)di->pcii.u.h0.base_registers_pci[frame_buffer + 1] << 32;
+			|= (uint64)NV_BAR_HOST(di->pcii.u.h0, frame_buffer + 1) << 32;
 	} else {
 		TRACE("framebuffer is 32 bit\n");
 	}
@@ -1046,7 +1127,12 @@ open_hook(const char* name, uint32 flags, void** cookie)
 	set_sem_owner(si->vblank, thinfo.team);
 
 	/* If there is a valid interrupt line assigned then set up interrupts */
-	if ((di->pcii.u.h0.interrupt_pin == 0x00) ||
+	if (
+#ifdef __POWERPC__
+	    true ||	/* ppc safe-attach: skip IRQ install (vblank unused here;
+				   avoids an OpenPIC interaction during diagnostic bring-up) */
+#endif
+	    (di->pcii.u.h0.interrupt_pin == 0x00) ||
 	    (di->pcii.u.h0.interrupt_line == 0xff) || /* no IRQ assigned */
 	    (di->pcii.u.h0.interrupt_line <= 0x02))   /* system IRQ assigned */
 	{
@@ -1314,6 +1400,7 @@ control_hook(void* dev, uint32 msg, void *buf, size_t len)
 			break;
 		}
 		case NV_ISA_OUT: {
+			if (!isa_bus) return B_NOT_SUPPORTED;
 			nv_in_out_isa io_isa;
 			if (user_memcpy(&io_isa, buf, sizeof(nv_in_out_isa)) < B_OK)
 				return B_BAD_ADDRESS;
@@ -1346,6 +1433,7 @@ control_hook(void* dev, uint32 msg, void *buf, size_t len)
 			break;
 		}
 		case NV_ISA_IN:	{
+			if (!isa_bus) return B_NOT_SUPPORTED;
 			nv_in_out_isa io_isa;
 			if (user_memcpy(&io_isa, buf, sizeof(nv_in_out_isa)) < B_OK)
 				return B_BAD_ADDRESS;
@@ -1398,16 +1486,28 @@ init_hardware(void)
 	if (get_module(B_PCI_MODULE_NAME, (module_info **)&pci_bus) != B_OK)
 		return B_ERROR;
 
+	/* ISA bus: required on x86 for VGA legacy I/O, but there is no ISA bus
+	 * on ppc. Make it optional there (isa_bus stays NULL; the ISA I/O paths
+	 * are guarded and only used for coldstart, which the ppc port skips). */
+#ifdef __POWERPC__
+	get_module(B_ISA_MODULE_NAME, (module_info **)&isa_bus);
+#else
 	/* choke if we can't find the ISA bus */
 	if (get_module(B_ISA_MODULE_NAME, (module_info **)&isa_bus) != B_OK)
 	{
 		put_module(B_PCI_MODULE_NAME);
 		return B_ERROR;
 	}
+#endif
 
 	/* while there are more pci devices */
 	while ((*pci_bus->get_nth_pci_info)(index, &pcii) == B_NO_ERROR) {
 		int vendor = 0;
+#ifdef __POWERPC__
+		if (pcii.vendor_id == VENDOR_ID_NVIDIA)
+			dprintf("nvidia/ppc: probe PCI %02x:%02x.%x vendor=0x%04x device=0x%04x\n",
+				pcii.bus, pcii.device, pcii.function, pcii.vendor_id, pcii.device_id);
+#endif
 
 		/* if we match a supported vendor */
 		while (SupportedDevices[vendor].vendor) {
@@ -1432,6 +1532,10 @@ init_hardware(void)
 	}
 
 done:
+#ifdef __POWERPC__
+	dprintf("nvidia/ppc: init_hardware %s\n",
+		found ? "FOUND supported device" : "NO supported device");
+#endif
 	if (found) {
 		TRACE ("init_hardware: found device\n");
 	} else {
@@ -1535,11 +1639,15 @@ init_driver(void)
 	if (get_module(B_PCI_MODULE_NAME, (module_info **)&pci_bus) != B_OK)
 		return B_ERROR;
 
-	/* get a handle for the isa bus */
+	/* get a handle for the isa bus (optional on ppc - no ISA bus there) */
+#ifdef __POWERPC__
+	get_module(B_ISA_MODULE_NAME, (module_info **)&isa_bus);
+#else
 	if (get_module(B_ISA_MODULE_NAME, (module_info **)&isa_bus) != B_OK) {
 		put_module(B_PCI_MODULE_NAME);
 		return B_ERROR;
 	}
+#endif
 
 	/* get a handle for the agp bus if it exists */
 	get_module(B_AGP_GART_MODULE_NAME, (module_info **)&agp_bus);
@@ -1594,7 +1702,8 @@ uninit_driver(void)
 
 	/* put the pci module away */
 	put_module(B_PCI_MODULE_NAME);
-	put_module(B_ISA_MODULE_NAME);
+	if (isa_bus)
+		put_module(B_ISA_MODULE_NAME);
 
 	/* put the agp module away if it's there */
 	if (agp_bus)

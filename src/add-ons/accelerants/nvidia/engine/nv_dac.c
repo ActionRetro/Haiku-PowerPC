@@ -153,14 +153,17 @@ status_t nv_dac_palette(uint8 r[256],uint8 g[256],uint8 b[256])
 
 	/* select first PAL adress before starting programming */
 	NV_REG8(NV8_PALINDW) = 0x00;
+	NV_PPC_EIEIO;
 
 	/* loop through all 256 to program DAC */
 	for (i = 0; i < 256; i++)
 	{
 		/* the 6 implemented bits are on b0-b5 of the bus */
-		NV_REG8(NV8_PALDATA) = r[i];
-		NV_REG8(NV8_PALDATA) = g[i];
-		NV_REG8(NV8_PALDATA) = b[i];
+		/* ppc: eieio between same-address MMIO stores so they aren't
+		 * coalesced (would break the DAC palette auto-increment). */
+		NV_REG8(NV8_PALDATA) = r[i]; NV_PPC_EIEIO;
+		NV_REG8(NV8_PALDATA) = g[i]; NV_PPC_EIEIO;
+		NV_REG8(NV8_PALDATA) = b[i]; NV_PPC_EIEIO;
 	}
 	if (NV_REG8(NV8_PALINDW) != 0x00)
 	{

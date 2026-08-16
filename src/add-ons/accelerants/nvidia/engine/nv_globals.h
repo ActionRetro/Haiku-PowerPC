@@ -7,6 +7,11 @@ extern vuint32 *regs;
 extern display_mode *my_mode_list;
 extern area_id my_mode_list_area;
 extern int accelerantIsClone;
+#ifdef __POWERPC__
+extern uint8 ppc_crtc_shadow[2][256];
+extern uint8 ppc_seq_shadow[256];
+extern uint8 ppc_grph_shadow[256];
+#endif
 
 extern nv_get_set_pci nv_pci_access;
 extern nv_in_out_isa nv_isa_access;

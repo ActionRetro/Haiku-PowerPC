@@ -39,6 +39,20 @@ static status_t init_common(int the_fd) {
 			goto error0;
 	}
 	// LOG is now available, si !NULL
+#ifdef __POWERPC__
+	/* ppc: force full accelerant logging to /boot/home/nvidia.*.log */
+	si->settings.logmask = 0xffffffff;
+	/* ppc: software rendering only - block hardware 2D acceleration so the
+	 * accelerant does NOT export FILL_RECTANGLE/SCREEN_TO_SCREEN_BLIT/etc.
+	 * (the 2D engine is not initialized on ppc; app_server driving it would
+	 * corrupt the framebuffer). app_server then renders in software + the
+	 * plain memcpy copy-to-front path. */
+	si->settings.block_acc = true;
+	/* ppc: software cursor only - disable the hardware cursor so app_server
+	 * draws the pointer through the software compositing path (the hw cursor
+	 * path on crtc2/dac2 with the engine off is a suspected corruptor). */
+	si->settings.hardcursor = false;
+#endif
 	LOG(4,("init_common: logmask 0x%08x, memory %dMB, hardcursor %d, usebios %d, switchhead %d, force_pci %d\n",
 		si->settings.logmask, si->settings.memory, si->settings.hardcursor, si->settings.usebios, si->settings.switchhead, si->settings.force_pci));
 	LOG(4,("init_common: dumprom %d, unhide_fw %d, pgm_panel %d, dma_acc %d, tv_output %d, vga_on_tv %d\n",
@@ -123,6 +137,12 @@ status_t INIT_ACCELERANT(int the_fd)
 		result = B_NOT_ALLOWED;
 		goto error1;
 	}
+
+#ifdef __POWERPC__
+	/* ppc RUNG 2 - driving display: kernel attached + switched regs to BE.
+	 * Proceed into powerup + (conservative) modeset. */
+	LOG(1, ("INIT: ppc rung 2 - driving display\n"));
+#endif
 
 	/* call the device specific init code */
 	result = nv_general_powerup();

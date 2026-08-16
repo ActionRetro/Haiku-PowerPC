@@ -732,6 +732,7 @@ status_t nv_crtc2_set_display_pitch()
 	CRTC2W(PITCHL, (offset & 0x00ff));
 	CRTC2W(REPAINT0, ((CRTC2R(REPAINT0) & 0x1f) | ((offset & 0x0700) >> 3)));
 
+
 	return B_OK;
 }
 

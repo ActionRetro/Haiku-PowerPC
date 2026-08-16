@@ -292,12 +292,17 @@ status_t SET_DISPLAY_MODE(display_mode *mode_to_set)
 	/* note:
 	 * Maybe later we can forget about non-DMA mode (depends on 3D acceleration
 	 * attempts). */
+#ifdef __POWERPC__
+	/* ppc rung 2: 2D engine off (modeset only; software rendering) */
+	(void)0;
+#else
 	if (!si->settings.block_acc) {
 		if (!si->settings.dma_acc)
 			nv_acc_init();
 		else
 			nv_acc_init_dma();
 	}
+#endif
 
 	/* set up overlay unit for this mode */
 	nv_bes_init();
@@ -338,6 +343,7 @@ status_t SET_DISPLAY_MODE(display_mode *mode_to_set)
 	nv_set_cas_latency();
 
 	LOG(1,("SETMODE: booted since %f mS\n", system_time()/1000.0));
+
 
 	return B_OK;
 }

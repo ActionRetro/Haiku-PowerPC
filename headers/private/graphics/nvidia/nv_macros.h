@@ -885,9 +885,29 @@
 #define NV32_NV44_WHAT13	0x0000170c
 
 /* Macros for convenient accesses to the NV chips */
+/* ppc: the register aperture presents bytes in natural big-endian order - CPU
+ * byte address +N is dword byte N counting from the MSB (measured against
+ * PRAMIN on real hw, 2026-08-16). The chip's endian switch at PMC $0004 fixes
+ * up 32-bit accesses only; byte addresses are NOT remapped. An earlier ^3 / ^2
+ * "compensation" here sent every byte access 3 (resp. 2) bytes past its target,
+ * so the VGA index port at $6033d4 was written at $6033d7 and the CRTC index
+ * was never selected - leaving pitch, depth and palette unprogrammed. */
+#ifdef __POWERPC__
 #define NV_REG8(r_)  ((vuint8  *)regs)[(r_)]
 #define NV_REG16(r_) ((vuint16 *)regs)[(r_) >> 1]
 #define NV_REG32(r_) ((vuint32 *)regs)[(r_) >> 2]
+#else
+#define NV_REG8(r_)  ((vuint8  *)regs)[(r_)]
+#define NV_REG16(r_) ((vuint16 *)regs)[(r_) >> 1]
+#define NV_REG32(r_) ((vuint32 *)regs)[(r_) >> 2]
+#endif
+
+/* ppc: Enforce In-order Execution of I/O between MMIO register accesses. */
+#ifdef __POWERPC__
+#define NV_PPC_EIEIO __asm__ __volatile__ ("eieio" : : : "memory")
+#else
+#define NV_PPC_EIEIO ((void)0)
+#endif
 
 /* read and write to PCI config space */
 #define CFGR(A)   (*(nv_pci_access.offset=NVCFG_##A, ioctl(fd,NV_GET_PCI, &nv_pci_access,sizeof(nv_pci_access)), &nv_pci_access.value))
@@ -934,6 +954,56 @@
 /* read and write from PCI GRAPHICS indexed registers */
 #define GRPHW(A,B)(NV_REG16(NV16_GRPHIND) = ((NVGRPHX_##A) | ((B) << 8)))
 #define GRPHR(A)  (NV_REG8(NV8_GRPHIND) = (NVGRPHX_##A), NV_REG8(NV8_GRPHDAT))
+
+#ifdef __POWERPC__
+/* ppc: only 32-bit MMIO works reliably (UniNorth + big-endian aperture); the
+ * byte-wide VGA index/data ports fail (8/16-bit reads return 0). Program them
+ * with a single 32-bit combined write (index=byte0, data=byte1; preserve the
+ * upper 16 bits) and serve reads from a software shadow of prior writes. */
+#undef CRTCW
+#undef CRTCR
+#undef CRTC2W
+#undef CRTC2R
+#undef SEQW
+#undef SEQR
+#undef GRPHW
+#undef GRPHR
+/* two SEPARATE 8-bit writes (index port, then data port) - the VGA byte ports
+ * do not accept combined 16/32-bit writes on this hw, but single-byte writes work
+ * (proven by the palette). base_ is the index port; data port is base_+1. */
+/* Expression-valued form of the barrier: NV_PPC_EIEIO is a statement and
+ * cannot appear inside the comma expressions below. */
+#define NV_PPC_IOBAR (__extension__ ({ NV_PPC_EIEIO; 0; }))
+
+/* The barrier between index and data is REQUIRED: two stores to adjacent MMIO
+ * byte addresses can be gathered or reordered on ppc, letting the data write
+ * reach the chip while the previous index is still selected. */
+#define NV_PPC_IDXW(base_, sh_, idx_, val_) \
+	( (sh_)[(idx_) & 0xff] = (uint8)(val_), \
+	  NV_REG8(base_)       = (uint8)((idx_) & 0xff), \
+	  NV_PPC_IOBAR, \
+	  NV_REG8((base_) + 1) = (uint8)(val_), \
+	  NV_PPC_IOBAR )
+#define CRTCW(A,B)  NV_PPC_IDXW(NV16_CRTCIND,  ppc_crtc_shadow[0], NVCRTCX_##A, (B))
+#define CRTC2W(A,B) NV_PPC_IDXW(NV16_CRTC2IND, ppc_crtc_shadow[1], NVCRTCX_##A, (B))
+#define SEQW(A,B)   NV_PPC_IDXW(NV16_SEQIND,   ppc_seq_shadow,     NVSEQX_##A,  (B))
+#define GRPHW(A,B)  NV_PPC_IDXW(NV16_GRPHIND,  ppc_grph_shadow,    NVGRPHX_##A, (B))
+/* Read the hardware, not the shadow. The shadow (still written by NV_PPC_IDXW
+ * above, harmlessly) starts zero-filled and was never seeded from the card, so
+ * serving reads from it made every read-modify-write clear bits OpenFirmware
+ * had set - and the card is deliberately not coldstarted. */
+/* Same barrier requirement on reads: without it the data-port read is served
+ * under the previously selected index, so every read-modify-write in the CRTC
+ * path computes from the wrong register. */
+#define CRTCR(A)  (NV_REG8(NV8_CRTCIND)  = (NVCRTCX_##A), NV_PPC_IOBAR, \
+	NV_REG8(NV8_CRTCDAT))
+#define CRTC2R(A) (NV_REG8(NV8_CRTC2IND) = (NVCRTCX_##A), NV_PPC_IOBAR, \
+	NV_REG8(NV8_CRTC2DAT))
+#define SEQR(A)   (NV_REG8(NV8_SEQIND)   = (NVSEQX_##A),  NV_PPC_IOBAR, \
+	NV_REG8(NV8_SEQDAT))
+#define GRPHR(A)  (NV_REG8(NV8_GRPHIND)  = (NVGRPHX_##A), NV_PPC_IOBAR, \
+	NV_REG8(NV8_GRPHDAT))
+#endif
 
 /* read and write from the acceleration engine registers */
 #define ACCR(A)    (NV_REG32(NVACC_##A))

@@ -2286,6 +2286,25 @@ static void detect_panels()
 			/* if the panel isn't selected, tvout is.. */
 			tvout2 = !(CRTC2R(LCD) & 0x01);
 		}
+#ifdef __POWERPC__
+		/* ppc/OpenFirmware: OF programs the LCD's flatpanel timing registers but
+		 * does NOT set the CRTC "slaved mode" bit (PIXEL b7) this PC-oriented
+		 * driver keys panel detection off. Detect the panel from the FP registers
+		 * themselves (ground truth): a valid DAC2 modeline => an LCD is on crtc2,
+		 * so mark it slaved (not tvout) and let the normal path set CRTC2_TMDS +
+		 * program the full flatpanel datapath (scaler/depth) for our mode. */
+		if (!slaved_for_dev2)
+		{
+			uint16 fpw = ((DAC2R(FP_HDISPEND) & 0x0000ffff) + 1);
+			uint16 fph = ((DAC2R(FP_VDISPEND) & 0x0000ffff) + 1);
+			if ((fpw >= 640) && (fph >= 480))
+			{
+				LOG(2,("CRTC2: ppc - detecting LCD from FP regs (%dx%d), forcing slaved\n", fpw, fph));
+				slaved_for_dev2 = true;
+				tvout2 = false;
+			}
+		}
+#endif
 	}
 
 	LOG(2,("INFO: End flatpanel related CRTC registers dump.\n"));
