@@ -7,6 +7,22 @@
 #ifndef NV_ACC_H
 #define NV_ACC_H
 
+/* FifoFree below is a 16-bit field in the LOW half of the 32-bit hardware word
+ * at offset 0x10 - the header's own comment calls it "little endian". On a
+ * little-endian host the low half is at bytes 0x10-0x11 and the struct field
+ * works; on BIG-ENDIAN the low half is at 0x12-0x13, so a uint16 read at 0x10
+ * returns the other half (Nop) and is always 0. Read the whole word and mask.
+ * The register aperture is in big-endian mode (PMC 0x0004), so 32-bit reads
+ * come back correct - PMC_BOOT_0 reads $034900b1, which is not palindromic. */
+#ifdef __POWERPC__
+#	define NV_FIFO_FREE(p_) \
+		((uint16)((*(volatile uint32*)(void*)&((p_)->FifoFree)) & 0xffff))
+#	define NV_FIFO_RAW(p_)  (*(volatile uint32*)(void*)&((p_)->FifoFree))
+#else
+#	define NV_FIFO_FREE(p_) ((p_)->FifoFree)
+#	define NV_FIFO_RAW(p_)  ((uint32)(p_)->FifoFree)
+#endif
+
 typedef struct {
 	uint32 reserved00[0x0004];
 	uint16 FifoFree;			/* little endian (FIFO internal register) */

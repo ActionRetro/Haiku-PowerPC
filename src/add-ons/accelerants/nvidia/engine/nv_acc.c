@@ -68,9 +68,20 @@ static cmd_nv3_gdi_rectangle_text* nv3_gdi_rectangle_text_ptr;
 
 status_t nv_acc_wait_idle()
 {
-	/* wait until engine completely idle */
+	/* ppc: BOUNDED. This was an unbounded spin, so an engine that never goes
+	 * idle wedged the machine with no output at all - which is exactly what
+	 * happened on the albook at stage 1. 2 seconds is far longer than any real
+	 * 2D operation; if STATUS has not cleared by then the engine is not running
+	 * and no amount of further waiting will change that. */
+	int tries = 20000;
 	while (ACCR(STATUS))
 	{
+		if (--tries <= 0)
+		{
+			LOG(1, ("ppc-acc: TIMEOUT in wait_idle, STATUS stuck at $%08x\n",
+				ACCR(STATUS)));
+			return B_ERROR;
+		}
 		/* snooze a bit so I do not hammer the bus */
 		snooze (100); 
 	}
@@ -1042,16 +1053,41 @@ status_t nv_acc_init()
 	}
 
 	/* initialize our local pointers */
+	LOG(1, ("ppc-acc: about to assert_fifo\n"));
 	nv_acc_assert_fifo();
+	LOG(1, ("ppc-acc: assert_fifo done, blackrect_ptr $%p\n",
+		nv_image_black_rectangle_ptr));
+	LOG(1, ("ppc-acc: FifoFree raw32 $%08x -> free $%04x (struct-field read gives $%04x)\n",
+		NV_FIFO_RAW(nv_image_black_rectangle_ptr),
+		NV_FIFO_FREE(nv_image_black_rectangle_ptr),
+		(uint16)(nv_image_black_rectangle_ptr->FifoFree)));
 
 	/* do first actual acceleration engine command:
 	 * setup clipping region (workspace size) to 32768 x 32768 pixels:
 	 * wait for room in fifo for clipping cmd if needed.
-	 * (fifo holds 256 32bit words: count those, not bytes) */
-	while (((nv_image_black_rectangle_ptr->FifoFree) >> 2) < 2)
+	 * (fifo holds 256 32bit words: count those, not bytes)
+	 *
+	 * ppc: BOUNDED. This is the FIRST command ever issued to the engine, and an
+	 * unbounded spin here is what hung the albook at stage 1 - the FIFO never
+	 * reported free space, i.e. the engine was not actually running. Log what we
+	 * are reading rather than spinning on it forever: a plausible-but-wrong value
+	 * (byte-swapped, or a constant) tells us something very different from a
+	 * flat zero. */
 	{
-		/* snooze a bit so I do not hammer the bus */
-		snooze (10); 
+		int tries = 5000;
+		while ((NV_FIFO_FREE(nv_image_black_rectangle_ptr) >> 2) < 2)
+		{
+			if (--tries <= 0)
+			{
+				LOG(1, ("ppc-acc: TIMEOUT waiting for FIFO, FifoFree reads $%08x\n",
+					(uint32)(nv_image_black_rectangle_ptr->FifoFree)));
+				LOG(1, ("ppc-acc: engine STATUS $%08x\n", ACCR(STATUS)));
+				return B_ERROR;
+			}
+			/* snooze a bit so I do not hammer the bus */
+			snooze (10); 
+		}
+		LOG(1, ("ppc-acc: FIFO ready after %d tries\n", 5000 - tries));
 	}
 	/* now setup clipping (writing 2 32bit words) */
 	nv_image_black_rectangle_ptr->TopLeft = 0x00000000;
@@ -1376,7 +1412,7 @@ status_t nv_acc_setup_blit()
 	/* setup solid pattern:
 	 * wait for room in fifo for pattern cmd if needed.
 	 * (fifo holds 256 32bit words: count those, not bytes) */
-	while (((nv_image_pattern_ptr->FifoFree) >> 2) < 5)
+	while ((NV_FIFO_FREE(nv_image_pattern_ptr) >> 2) < 5)
 	{
 		/* snooze a bit so I do not hammer the bus */
 		snooze (10); 
@@ -1391,7 +1427,7 @@ status_t nv_acc_setup_blit()
 	/* ROP registers (Raster OPeration):
 	 * wait for room in fifo for ROP cmd if needed.
 	 * (fifo holds 256 32bit words: count those, not bytes) */
-	while (((nv_rop5_solid_ptr->FifoFree) >> 2) < 1)
+	while ((NV_FIFO_FREE(nv_rop5_solid_ptr) >> 2) < 1)
 	{
 		/* snooze a bit so I do not hammer the bus */
 		snooze (10);
@@ -1409,7 +1445,7 @@ status_t nv_acc_blit(uint16 xs,uint16 ys,uint16 xd,uint16 yd,uint16 w,uint16 h)
 	/* instruct engine what to blit:
 	 * wait for room in fifo for blit cmd if needed.
 	 * (fifo holds 256 32bit words: count those, not bytes) */
-	while (((nv_image_blit_ptr->FifoFree) >> 2) < 3)
+	while ((NV_FIFO_FREE(nv_image_blit_ptr) >> 2) < 3)
 	{
 		/* snooze a bit so I do not hammer the bus */
 		snooze (10); 
@@ -1429,7 +1465,7 @@ status_t nv_acc_setup_rectangle(uint32 color)
 	/* setup solid pattern:
 	 * wait for room in fifo for pattern cmd if needed.
 	 * (fifo holds 256 32bit words: count those, not bytes) */
-	while (((nv_image_pattern_ptr->FifoFree) >> 2) < 5)
+	while ((NV_FIFO_FREE(nv_image_pattern_ptr) >> 2) < 5)
 	{
 		/* snooze a bit so I do not hammer the bus */
 		snooze (10); 
@@ -1444,7 +1480,7 @@ status_t nv_acc_setup_rectangle(uint32 color)
 	/* ROP registers (Raster OPeration):
 	 * wait for room in fifo for ROP cmd if needed.
 	 * (fifo holds 256 32bit words: count those, not bytes) */
-	while (((nv_rop5_solid_ptr->FifoFree) >> 2) < 1)
+	while ((NV_FIFO_FREE(nv_rop5_solid_ptr) >> 2) < 1)
 	{
 		/* snooze a bit so I do not hammer the bus */
 		snooze (10); 
@@ -1455,7 +1491,7 @@ status_t nv_acc_setup_rectangle(uint32 color)
 	/* setup fill color:
 	 * wait for room in fifo for bitmap cmd if needed.
 	 * (fifo holds 256 32bit words: count those, not bytes) */
-	while (((nv3_gdi_rectangle_text_ptr->FifoFree) >> 2) < 1)
+	while ((NV_FIFO_FREE(nv3_gdi_rectangle_text_ptr) >> 2) < 1)
 	{
 		/* snooze a bit so I do not hammer the bus */
 		snooze (10);
@@ -1471,7 +1507,7 @@ status_t nv_acc_rectangle(uint32 xs,uint32 xe,uint32 ys,uint32 yl)
 	/* instruct engine what to fill:
 	 * wait for room in fifo for bitmap cmd if needed.
 	 * (fifo holds 256 32bit words: count those, not bytes) */
-	while (((nv3_gdi_rectangle_text_ptr->FifoFree) >> 2) < 2)
+	while ((NV_FIFO_FREE(nv3_gdi_rectangle_text_ptr) >> 2) < 2)
 	{
 		/* snooze a bit so I do not hammer the bus */
 		snooze (10); 
@@ -1491,7 +1527,7 @@ status_t nv_acc_setup_rect_invert()
 	/* setup solid pattern:
 	 * wait for room in fifo for pattern cmd if needed.
 	 * (fifo holds 256 32bit words: count those, not bytes) */
-	while (((nv_image_pattern_ptr->FifoFree) >> 2) < 5)
+	while ((NV_FIFO_FREE(nv_image_pattern_ptr) >> 2) < 5)
 	{
 		/* snooze a bit so I do not hammer the bus */
 		snooze (10); 
@@ -1506,7 +1542,7 @@ status_t nv_acc_setup_rect_invert()
 	/* ROP registers (Raster OPeration):
 	 * wait for room in fifo for ROP cmd if needed.
 	 * (fifo holds 256 32bit words: count those, not bytes) */
-	while (((nv_rop5_solid_ptr->FifoFree) >> 2) < 1)
+	while ((NV_FIFO_FREE(nv_rop5_solid_ptr) >> 2) < 1)
 	{
 		/* snooze a bit so I do not hammer the bus */
 		snooze (10); 
@@ -1517,7 +1553,7 @@ status_t nv_acc_setup_rect_invert()
 	/* reset fill color:
 	 * wait for room in fifo for bitmap cmd if needed.
 	 * (fifo holds 256 32bit words: count those, not bytes) */
-	while (((nv3_gdi_rectangle_text_ptr->FifoFree) >> 2) < 1)
+	while ((NV_FIFO_FREE(nv3_gdi_rectangle_text_ptr) >> 2) < 1)
 	{
 		/* snooze a bit so I do not hammer the bus */
 		snooze (10); 
@@ -1533,7 +1569,7 @@ status_t nv_acc_rectangle_invert(uint32 xs,uint32 xe,uint32 ys,uint32 yl)
 	/* instruct engine what to invert:
 	 * wait for room in fifo for bitmap cmd if needed.
 	 * (fifo holds 256 32bit words: count those, not bytes) */
-	while (((nv3_gdi_rectangle_text_ptr->FifoFree) >> 2) < 2)
+	while ((NV_FIFO_FREE(nv3_gdi_rectangle_text_ptr) >> 2) < 2)
 	{
 		/* snooze a bit so I do not hammer the bus */
 		snooze (10); 
