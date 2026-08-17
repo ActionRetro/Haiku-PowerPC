@@ -22,6 +22,8 @@
 #include "machine.h"
 #include "real_time_clock.h"
 
+extern void debug_cleanup(void);
+
 
 // GCC defined globals
 extern void (*__ctor_list)(void);
@@ -72,6 +74,9 @@ platform_start_kernel(void)
 
 	printf("kernel entry at %p\n", (void*)kernelEntry);
 	printf("kernel stack top: %p\n", (void*)stackTop);
+
+	// hand the loader's log to the kernel so it lands in the syslog
+	debug_cleanup();
 
 	/* TODO: ?
 	mmu_init_for_kernel();

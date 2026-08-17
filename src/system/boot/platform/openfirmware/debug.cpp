@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include <boot/platform.h>
+#include <boot/stage2.h>
 #include <boot/stdio.h>
 #include <platform/openfirmware/openfirmware.h>
 
@@ -76,4 +77,23 @@ platform_debug_get_log_buffer(size_t* _size)
 		*_size = sizeof(sBuffer);
 
 	return sBuffer;
+}
+
+
+/*!	Hands the log gathered by the loader to the kernel, which copies it into
+	the syslog (see kernel debug.cpp: args->debug_output). Without this the
+	loader's dprintf output only ever reaches the on-screen console - and on
+	ppc that console is OpenFirmware's, so nothing is readable offline.
+	Mirrors the equivalent in the bios_ia32 and efi platforms.
+*/
+void
+debug_cleanup(void)
+{
+	gKernelArgs.keep_debug_output_buffer = false;
+
+	gKernelArgs.debug_output = kernel_args_malloc(sBufferPosition);
+	if (gKernelArgs.debug_output != NULL) {
+		memcpy(gKernelArgs.debug_output, sBuffer, sBufferPosition);
+		gKernelArgs.debug_size = sBufferPosition;
+	}
 }
