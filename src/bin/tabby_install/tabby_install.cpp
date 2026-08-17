@@ -72,17 +72,22 @@ partition_disk(BDiskDevice& device, const char* kAPM)
 	if (st != B_OK) { LOG("GetPartitionableSpaceAt(0): %s", strerror(st)); return 1; }
 	LOG("free space #0: offset=%lld size=%lld", (long long)offset, (long long)size);
 
+	// Apple_Bootstrap (not Apple_HFS) so the installed disk shows up in the
+	// Mac's Startup Manager - hold Option at power-on - and the user never has
+	// to type an Open Firmware boot command. The filesystem inside is still
+	// HFS; only the partition map type differs. macOS also declines to
+	// auto-mount Apple_Bootstrap, which is a bonus.
 	off_t hfsOffset = offset, hfsSize = kHFSSize;
-	BString hfsName("loader");
-	st = device.ValidateCreateChild(&hfsOffset, &hfsSize, "Apple_HFS", &hfsName,
-		"");
-	if (st != B_OK) { LOG("ValidateCreateChild(HFS): %s", strerror(st)); return 1; }
-	LOG("HFS validated: offset=%lld size=%lld name='%s'",
+	BString hfsName("bootstrap");
+	st = device.ValidateCreateChild(&hfsOffset, &hfsSize, "Apple_Bootstrap",
+		&hfsName, "");
+	if (st != B_OK) { LOG("ValidateCreateChild(bootstrap): %s", strerror(st)); return 1; }
+	LOG("bootstrap validated: offset=%lld size=%lld name='%s'",
 		(long long)hfsOffset, (long long)hfsSize, hfsName.String());
-	st = device.CreateChild(hfsOffset, hfsSize, "Apple_HFS", hfsName.String(),
-		"");
-	if (st != B_OK) { LOG("CreateChild(HFS): %s", strerror(st)); return 1; }
-	LOG("Apple_HFS loader partition created");
+	st = device.CreateChild(hfsOffset, hfsSize, "Apple_Bootstrap",
+		hfsName.String(), "");
+	if (st != B_OK) { LOG("CreateChild(bootstrap): %s", strerror(st)); return 1; }
+	LOG("Apple_Bootstrap loader partition created");
 
 	// --- Haiku_BFS system child (largest remaining space) ---
 	st = device.GetPartitioningInfo(&info);

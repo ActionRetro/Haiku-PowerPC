@@ -44,6 +44,10 @@
 
 static const char* kCommandName = "makebootable";
 static const char* kAppleTypeHFS = "Apple_HFS";
+// Apple_Bootstrap is what the Mac's Startup Manager offers in the Option
+// key picker; Apple_HFS is still accepted for disks partitioned by earlier
+// builds.
+static const char* kAppleTypeBootstrap = "Apple_Bootstrap";
 static const off_t kCopyBufferSize = 1024 * 1024;
 
 
@@ -72,9 +76,10 @@ print_usage_and_exit(bool error)
 //! Finds the first descendant partition whose (Apple) type matches.
 class TypeFinder : public BDiskDeviceVisitor {
 public:
-	TypeFinder(const char* type)
+	TypeFinder(const char* type, const char* altType = NULL)
 		:
-		fType(type)
+		fType(type),
+		fAltType(altType)
 	{
 	}
 
@@ -92,10 +97,14 @@ private:
 	bool _Check(BPartition* partition)
 	{
 		const char* type = partition->Type();
-		return type != NULL && strcmp(type, fType) == 0;
+		if (type == NULL)
+			return false;
+		return strcmp(type, fType) == 0
+			|| (fAltType != NULL && strcmp(type, fAltType) == 0);
 	}
 
 	const char* fType;
+	const char* fAltType;
 };
 
 
@@ -110,7 +119,7 @@ find_hfs_loader_partition(BDiskDeviceRoster& roster, const char* mountPoint,
 	if (status != B_OK)
 		return status;
 
-	TypeFinder finder(kAppleTypeHFS);
+	TypeFinder finder(kAppleTypeBootstrap, kAppleTypeHFS);
 	BPartition* hfs = device.VisitEachDescendant(&finder);
 	if (hfs == NULL)
 		return B_ENTRY_NOT_FOUND;
@@ -251,10 +260,11 @@ make_bootable(const char* directory, bool dryRun)
 		}
 		if (find_hfs_loader_partition(roster, targetMountPoint.Path(),
 				targetDisk, &targetHFS) != B_OK) {
-			fprintf(stderr, "Error: the target disk has no \"%s\" loader "
-				"partition. Create a small (>= 16 MB) \"%s\" partition on the "
-				"target disk before the Haiku partition, then try again.\n",
-				kAppleTypeHFS, kAppleTypeHFS);
+			fprintf(stderr, "Error: the target disk has no \"%s\" (or "
+				"\"%s\") loader partition. Create a small (>= 16 MB) \"%s\" "
+				"partition on the target disk before the Haiku partition, then "
+				"try again.\n",
+				kAppleTypeBootstrap, kAppleTypeHFS, kAppleTypeBootstrap);
 			return B_ENTRY_NOT_FOUND;
 		}
 	} else {
@@ -262,11 +272,11 @@ make_bootable(const char* directory, bool dryRun)
 			fprintf(stderr, "Error: cannot open disk \"%s\".\n", directory);
 			return B_ERROR;
 		}
-		TypeFinder finder(kAppleTypeHFS);
+		TypeFinder finder(kAppleTypeBootstrap, kAppleTypeHFS);
 		targetHFS = targetDisk.VisitEachDescendant(&finder);
 		if (targetHFS == NULL) {
 			fprintf(stderr, "Error: the disk \"%s\" has no \"%s\" loader "
-				"partition.\n", directory, kAppleTypeHFS);
+				"partition.\n", directory, kAppleTypeBootstrap);
 			return B_ENTRY_NOT_FOUND;
 		}
 	}

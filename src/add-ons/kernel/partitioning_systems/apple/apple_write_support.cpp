@@ -55,11 +55,12 @@ static const uint32 kMapPartitionStatus = kPartitionIsValid | kPartitionIsAlloca
 // based, so these are labels; we match the layout build_combined_disk.py
 // produces (which boots on real Open Firmware).
 static const char* kAppleTypeHFS = "Apple_HFS";
+static const char* kAppleTypeBootstrap = "Apple_Bootstrap";
 static const char* kAppleTypeBFS = "Haiku_BFS";
 static const char* kAppleTypeMap = "Apple_partition_map";
 
 static const char* const kSupportedChildTypes[] = {
-	kAppleTypeBFS, kAppleTypeHFS, NULL
+	kAppleTypeBFS, kAppleTypeBootstrap, kAppleTypeHFS, NULL
 };
 
 
