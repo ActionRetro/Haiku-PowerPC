@@ -48,10 +48,15 @@ static status_t init_common(int the_fd) {
 	 * corrupt the framebuffer). app_server then renders in software + the
 	 * plain memcpy copy-to-front path. */
 	si->settings.block_acc = true;
-	/* ppc: software cursor only - disable the hardware cursor so app_server
-	 * draws the pointer through the software compositing path (the hw cursor
-	 * path on crtc2/dac2 with the engine off is a suspected corruptor). */
-	si->settings.hardcursor = false;
+	/* ppc: HARDWARE cursor. This was previously forced off on the grounds that
+	 * the hw cursor path "is a suspected corruptor" - but that was a guess from
+	 * before modesetting worked, and was never verified. With a software cursor
+	 * every mouse move costs app_server a region recomposite plus a byte-swapped
+	 * copy into VRAM across AGP (see HWInterface::_CopyToFront); in hardware it
+	 * costs two register writes. Note nv_crtc_cursor_define() needs the ppc byte
+	 * swap in nv_crtc.c to go with this - without it black cursor pixels come out
+	 * as a colour. */
+	si->settings.hardcursor = true;
 #endif
 	LOG(4,("init_common: logmask 0x%08x, memory %dMB, hardcursor %d, usebios %d, switchhead %d, force_pci %d\n",
 		si->settings.logmask, si->settings.memory, si->settings.hardcursor, si->settings.usebios, si->settings.switchhead, si->settings.force_pci));

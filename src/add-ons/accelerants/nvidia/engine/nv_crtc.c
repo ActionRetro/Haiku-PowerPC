@@ -905,6 +905,18 @@ status_t nv_crtc_cursor_hide()
 	return B_OK;
 }
 
+/* The cursor bitmap goes straight into the FRAMEBUFFER aperture (BAR1), which
+ * the card's endian switch does NOT cover - that switch (PMC 0x0004) applies to
+ * the register aperture only, which is why HWInterface::_CopyToFront byte-swaps
+ * 32-bit pixels by hand. These RGB15 cursor pixels need the same treatment:
+ * 0x0000 (transparent) and 0xffff (white) are byte-palindromic and would look
+ * fine either way, but 0x8000 (black) and 0x7fff (invert) are not. */
+#ifdef __POWERPC__
+#	define NV_CURSOR_PIX(p_) ((uint16)__builtin_bswap16((uint16)(p_)))
+#else
+#	define NV_CURSOR_PIX(p_) (p_)
+#endif
+
 /*set up cursor shape*/
 status_t nv_crtc_cursor_define(uint8* andMask,uint8* xorMask)
 {
@@ -932,7 +944,7 @@ status_t nv_crtc_cursor_define(uint8* andMask,uint8* xorMask)
 			/* set invert if requested */
 			if (  (*andMask & b)  &&   (*xorMask & b))  pixel = 0x7fff;
 			/* place the pixel in the bitmap */
-			cursor[x + (y * 32)] = pixel;
+			cursor[x + (y * 32)] = NV_CURSOR_PIX(pixel);
 			b >>= 1;
 		}
 		xorMask++;
@@ -949,7 +961,7 @@ status_t nv_crtc_cursor_define(uint8* andMask,uint8* xorMask)
 			/* set invert if requested */
 			if (  (*andMask & b)  &&   (*xorMask & b))  pixel = 0x7fff;
 			/* place the pixel in the bitmap */
-			cursor[x + (y * 32)] = pixel;
+			cursor[x + (y * 32)] = NV_CURSOR_PIX(pixel);
 			b >>= 1;
 		}
 		xorMask++;
