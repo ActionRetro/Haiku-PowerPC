@@ -16,11 +16,22 @@
 
 static bool sHasTlbia;
 
+void ppc_detect_altivec(void);
+
 status_t
 arch_cpu_preboot_init_percpu(kernel_args *args, int curr_cpu)
 {
 	// enable FPU
 	set_msr(get_msr() | MSR_FP_AVAILABLE);
+
+	// Enable AltiVec per-CPU, for the same reason as the FPU: this runs on
+	// every processor, and ppc_context_switch() executes stvx/lvx in kernel
+	// context on whichever CPU it happens to run on. Doing this only once on
+	// the boot CPU would leave a second processor taking an "AltiVec
+	// unavailable" exception on its first switch. Each CPU reads its own PVR.
+	ppc_detect_altivec();
+	if (gPPCHasAltiVec)
+		set_msr(get_msr() | MSR_VEC_AVAILABLE);
 
 	// The current thread must be NULL for all CPUs till we have threads.
 	// Some boot code relies on this.
@@ -30,9 +41,53 @@ arch_cpu_preboot_init_percpu(kernel_args *args, int curr_cpu)
 }
 
 
+bool gPPCHasAltiVec = false;
+
+
+/*!	Decides whether this CPU has an AltiVec unit, from the processor version in
+	the upper 16 bits of the PVR. Only the 74xx (G4) and 970 (G5) families do;
+	601/603/604/750 (G3) do not, and a vector instruction there traps.
+*/
+void
+ppc_detect_altivec(void)
+{
+	uint16 version = (uint16)(get_pvr() >> 16);
+
+	switch (version) {
+		case MPC7400:		/* 7400/7410 - the original G4 */
+		case MPC7410:
+		case MPC7447A:
+		case MPC7448:
+		case MPC7450:
+		case MPC7455:
+		case MPC7457:
+			gPPCHasAltiVec = true;
+			break;
+		default:
+			gPPCHasAltiVec = false;
+			break;
+	}
+
+}
+
+
+/*!	Logs what ppc_detect_altivec() found. Kept OUT of the detector itself: that
+	runs from arch_cpu_preboot_init_percpu(), which is far too early for
+	dprintf() - doing it there hangs the boot before any output appears.
+*/
+static void
+ppc_report_altivec(void)
+{
+	dprintf("ppc: PVR 0x%08" B_PRIx32 " (version 0x%04x): AltiVec %s\n",
+		get_pvr(), (uint16)(get_pvr() >> 16),
+		gPPCHasAltiVec ? "PRESENT" : "absent");
+}
+
+
 status_t
 arch_cpu_init(kernel_args *args)
 {
+	ppc_report_altivec();
 	// TODO: Let the boot loader put that info into the kernel args
 	// (property "tlbia" in the CPU node).
 	sHasTlbia = false;

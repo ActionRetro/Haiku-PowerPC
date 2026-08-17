@@ -130,6 +130,17 @@ arch_thread_init_kthread_stack(Thread* thread, void* _stack, void* _stackTop,
 	kstackTop -= 2;
 	kstackTop = (addr_t*)((addr_t)kstackTop & ~0xf);
 
+	// AltiVec save area: v20-v31 + VSCR + VRSAVE = 224 bytes, which
+	// ppc_context_switch() restores from ABOVE the general frame (it carves
+	// this off first, while r1 is still 16-byte aligned). It must be reserved
+	// here too, or the first switch into a brand new thread pops a vector area
+	// that was never pushed and reads straight off the top of the stack.
+	// Reserved unconditionally: on a CPU with no vector unit the switch skips
+	// the block and these bytes simply go unused, which costs nothing and
+	// keeps this frame layout independent of the CPU it ends up running on.
+	kstackTop -= 224 / sizeof(addr_t);
+	memset(kstackTop, 0, 224);
+
 	// LR, CR, r2, r3, r13-r31, f13-f31, as restored by ppc_context_switch()
 	kstackTop -= 23 + 2 * 19;
 	memset(kstackTop, 0, (23 + 2 * 19) * sizeof(addr_t));
@@ -214,6 +225,8 @@ arch_thread_enter_userspace(Thread *thread, addr_t entry, void *arg1, void *arg2
 	frame.srr0 = entry;
 	frame.srr1 = MSR_PRIVILEGE_LEVEL | MSR_EXCEPTIONS_ENABLED
 		| MSR_FP_AVAILABLE | MSR_MACHINE_CHECK_ENABLED
+		/* AltiVec, but only where the unit exists - see gPPCHasAltiVec */
+		| (gPPCHasAltiVec ? MSR_VEC_AVAILABLE : 0)
 		| MSR_INST_ADDRESS_TRANSLATION | MSR_DATA_ADDRESS_TRANSLATION;
 
 	// 16-byte align the user stack and lay down an empty initial frame

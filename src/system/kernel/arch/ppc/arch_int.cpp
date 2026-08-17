@@ -31,6 +31,7 @@
 #include <vm/vm.h>
 #include <vm/vm_priv.h>
 #include <vm/VMAddressSpace.h>
+#include <vm/VMArea.h>
 #include <PCI.h>
 
 #include <string.h>
@@ -103,6 +104,34 @@ print_iframe(struct iframe *frame)
 // Set to 1 to trace every exception (very noisy - floods the serial
 // console and the framebuffer, and slows the boot dramatically).
 #define TRACE_PPC_EXCEPTIONS 0
+
+// TEMP: resolve a user/kernel code or data address to its loaded image area
+// (name + offset) so a fault pc/lr/dar can be symbolized despite ASLR.
+static void
+ppc_log_img(const char* label, addr_t addr)
+{
+	if (addr == 0) {
+		dprintf("  %s=%08lx (null)\n", label, (unsigned long)addr);
+		return;
+	}
+	VMAddressSpace* space = IS_KERNEL_ADDRESS(addr)
+		? VMAddressSpace::GetKernel() : VMAddressSpace::GetCurrent();
+	if (space == NULL) {
+		dprintf("  %s=%08lx (no aspace)\n", label, (unsigned long)addr);
+		return;
+	}
+	space->ReadLock();
+	VMArea* area = space->LookupArea(addr);
+	if (area != NULL) {
+		dprintf("  %s=%08lx -> %s +%#lx (base %08lx)\n", label,
+			(unsigned long)addr, area->name,
+			(unsigned long)(addr - area->Base()), (unsigned long)area->Base());
+	} else
+		dprintf("  %s=%08lx -> (no area)\n", label, (unsigned long)addr);
+	space->ReadUnlock();
+	space->Put();
+}
+
 
 // Keep the per-CPU exception context's kernel_stack pointing just below the
 // deepest live iframe. A nested USERLAND exception (e.g. an interrupt taken
@@ -217,6 +246,96 @@ ppc_exception_entry(int vector, struct iframe *iframe)
 				= isInstructionFault ? iframe->srr0 : iframe->dar;
 			bool isWrite
 				= !isInstructionFault && (iframe->dsisr & (1 << 25));
+
+			// TEMP: log only faults that will NOT resolve -- i.e. the faulting
+			// address is covered by no area in the relevant address space. That
+			// skips the flood of ordinary demand-paging faults (the kernel
+			// touching a valid, not-yet-mapped user page during team setup) and
+			// keeps only genuine bad accesses: a user-mode null/wild pointer, or
+			// a kernel dereference of a stripped pointer (the bit-0x80000000
+			// crash) that vm_page_fault() is about to SIGSEGV or panic on.
+			// Mirrors vm_page_fault()'s own address-space lookup.
+			bool willFault;
+			{
+				VMAddressSpace* space = IS_KERNEL_ADDRESS(faultAddress)
+					? VMAddressSpace::GetKernel() : VMAddressSpace::GetCurrent();
+				if (space != NULL) {
+					space->ReadLock();
+					willFault = space->LookupArea(faultAddress) == NULL;
+					space->ReadUnlock();
+					space->Put();
+				} else
+					willFault = true;
+			}
+			if (willFault) {
+				Thread* t = thread_get_current_thread();
+
+				// PISMO bit-31 hunt: a supervisor-mode fault on a bit-31-clear
+				// (physical-looking) address that no area backs is the stripped-
+				// kernel-pointer crash. Panic FIRST with ONE compact line (no
+				// preceding dprintf) so the culprit stays readable at the top of
+				// the non-scrollable Pismo KDL screen.
+				{
+					cpu_ent* b31cpu = &gCPU[smp_get_current_cpu()];
+					bool b31recoverable = b31cpu->fault_handler != 0
+						|| (thread != NULL && thread->fault_handler != 0);
+					if (!b31recoverable && (iframe->srr1 & (1 << 14)) == 0
+							&& faultAddress >= 0x1000 && faultAddress < 0x80000000) {
+						uint32 gpr[32] = {
+							iframe->r0, iframe->r1, iframe->r2, iframe->r3,
+							iframe->r4, iframe->r5, iframe->r6, iframe->r7,
+							iframe->r8, iframe->r9, iframe->r10, iframe->r11,
+							iframe->r12, iframe->r13, iframe->r14, iframe->r15,
+							iframe->r16, iframe->r17, iframe->r18, iframe->r19,
+							iframe->r20, iframe->r21, iframe->r22, iframe->r23,
+							iframe->r24, iframe->r25, iframe->r26, iframe->r27,
+							iframe->r28, iframe->r29, iframe->r30, iframe->r31 };
+						int exact = -1, base = -1;
+						for (int i = 0; i < 32; i++) {
+							if (gpr[i] == (uint32)faultAddress)
+								exact = i;
+							if ((gpr[i] & 0x80000000) == 0 && gpr[i] >= 0x1000
+									&& (uint32)faultAddress >= gpr[i]
+									&& (uint32)faultAddress - gpr[i] < 0x10000)
+								base = i;
+						}
+						panic("BIT31KERNEL pc=%08lx lr=%08lx dar=%08lx exact=r%d "
+							"base=r%d baseval=%08lx", (unsigned long)iframe->srr0,
+							(unsigned long)iframe->lr, (unsigned long)faultAddress,
+							exact, base, base >= 0 ? (unsigned long)gpr[base] : 0UL);
+					}
+				}
+				uint32 insn = 0;
+				// Only read the faulting instruction from a plausibly-mapped
+				// user address. A jump through a null/low function pointer
+				// leaves srr0 in the first page (e.g. 0 when ctr==0), and
+				// reading there would itself fault - turning a recoverable
+				// user crash into a kernel panic. Skip the low page (and the
+				// kernel half); insn stays 0 for those, and vm_page_fault()
+				// below delivers the SIGSEGV cleanly.
+				if (iframe->srr0 >= B_PAGE_SIZE && iframe->srr0 < 0x80000000)
+					insn = *(volatile uint32*)(addr_t)iframe->srr0;
+				dprintf("uf %s pc=%08lx a=%08lx insn=%08lx t=%ld(%s)\n",
+					isInstructionFault ? "x" : (isWrite ? "w" : "r"),
+					(unsigned long)iframe->srr0, (unsigned long)faultAddress,
+					(unsigned long)insn,
+					(long)(t ? t->id : -1), t ? t->name : "?");
+				dprintf("  r0-7  %08x %08x %08x %08x %08x %08x %08x %08x\n",
+					iframe->r0, iframe->r1, iframe->r2, iframe->r3, iframe->r4,
+					iframe->r5, iframe->r6, iframe->r7);
+				dprintf("  r8-15 %08x %08x %08x %08x %08x %08x %08x %08x\n",
+					iframe->r8, iframe->r9, iframe->r10, iframe->r11, iframe->r12,
+					iframe->r13, iframe->r14, iframe->r15);
+				dprintf("  r16-23 %08x %08x %08x %08x %08x %08x %08x %08x\n",
+					iframe->r16, iframe->r17, iframe->r18, iframe->r19, iframe->r20,
+					iframe->r21, iframe->r22, iframe->r23);
+				dprintf("  r24-31 %08x %08x %08x %08x %08x %08x %08x %08x lr=%08x\n",
+					iframe->r24, iframe->r25, iframe->r26, iframe->r27, iframe->r28,
+					iframe->r29, iframe->r30, iframe->r31, iframe->lr);
+				ppc_log_img("pc ", iframe->srr0);
+				ppc_log_img("lr ", iframe->lr);
+				ppc_log_img("dar", faultAddress);
+			}
 
 			vm_page_fault(faultAddress, iframe->srr0,
 				isWrite,
@@ -359,7 +478,13 @@ ppc_exception_entry(int vector, struct iframe *iframe)
 			panic("performance monitor exception: unimplemented\n");
 			break;
 		case 0xf20: // altivec unavailable exception
-			panic("alitivec unavailable exception: unimplemented\n");
+			// Returning from here just re-executes the faulting instruction,
+			// so this must not be a silent "log and continue" - that hangs.
+			// With MSR_VEC set for both kernel and threads this should never
+			// fire; if it does, say why loudly.
+			panic("altivec unavailable exception (gPPCHasAltiVec=%d): the "
+				"vector unit is not enabled in this context\n",
+				gPPCHasAltiVec ? 1 : 0);
 			break;
 		case 0x1000:
 		case 0x1100:
@@ -373,7 +498,10 @@ ppc_exception_entry(int vector, struct iframe *iframe)
 			panic("system management exception: unimplemented\n");
 			break;
 		case 0x1600: // altivec assist exception
-			panic("altivec assist exception: unimplemented\n");
+			// Raised for denormal handling in Java mode. Switching the vector
+			// unit to non-Java (NJ) mode would avoid it entirely; until then,
+			// note it rather than killing the machine.
+			dprintf("altivec assist exception (denormal); ignored\n");
 			break;
 		case 0x1700: // thermal management exception
 			panic("thermal management exception: unimplemented\n");

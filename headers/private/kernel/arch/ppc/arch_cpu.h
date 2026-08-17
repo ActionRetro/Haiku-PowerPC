@@ -105,6 +105,7 @@ enum machine_state {
 	MSR_EXCEPTIONS_ENABLED			= 1L << 15,		// EE
 	MSR_PRIVILEGE_LEVEL				= 1L << 14,		// PR
 	MSR_FP_AVAILABLE				= 1L << 13,		// FP
+	MSR_VEC_AVAILABLE				= 1L << 25,		// AltiVec (G4/G5 only)
 	MSR_MACHINE_CHECK_ENABLED		= 1L << 12,		// ME
 	MSR_EXCEPTION_PREFIX			= 1L << 6,		// IP
 	MSR_INST_ADDRESS_TRANSLATION	= 1L << 5,		// IR
@@ -145,6 +146,11 @@ extern void set_sr(void *virtualAddress, uint32 value);
 extern uint32 get_msr(void);
 extern uint32 set_msr(uint32 value);
 extern uint32 get_pvr(void);
+
+/* True when this CPU has an AltiVec unit (G4/G5 families). Vector instructions
+ * TRAP on a G3, and this port runs on G3 machines too, so every AltiVec path -
+ * MSR_VEC, the context-switch save/restore - is gated on this. */
+extern bool gPPCHasAltiVec;
 
 extern void set_ibat0(struct block_address_translation *bat);
 extern void set_ibat1(struct block_address_translation *bat);

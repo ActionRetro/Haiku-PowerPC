@@ -226,7 +226,64 @@ FUNCTION_END(setl2cr)
 // void ppc_context_switch(addr_t *old_sp, addr_t new_sp);
 FUNCTION(ppc_context_switch):
 
-	// regs to push on the stack: f13-f31, r13-r31, r3, r2, cr, lr
+	// regs to push on the stack: v20-v31+VRSAVE+VSCR, f13-f31, r13-r31, r3, r2,
+	// cr, lr
+
+	// AltiVec first, WHILE r1 IS STILL 16-BYTE ALIGNED: stvx/lvx ignore the low
+	// 4 bits of the address, and the f/r pushes below move r1 in 8- and 4-byte
+	// steps. The ABI guarantees r1 is 16-byte aligned on entry, so subtracting a
+	// multiple of 16 keeps it aligned. Only v20-v31 are non-volatile under the
+	// PPC SysV ABI (same reason only f13-f31 are saved). Skipped entirely on a
+	// G3, where vector instructions do not exist.
+	lis			%r5, gPPCHasAltiVec@ha
+	lbz			%r5, gPPCHasAltiVec@l(%r5)
+	cmpwi		%r5, 0
+	beq			1f
+
+	// Enable the vector unit for the duration of this block. We CANNOT rely on
+	// the caller's MSR: ppc_context_switch() is reached from exception context
+	// (ppc_exception_entry -> reschedule -> arch_thread_context_switch), and
+	// that MSR has FP but not VEC - observed on hardware as srr1 0x00003030
+	// taking a 0xf20 right here. Preserve and restore whatever we were given.
+	mfmsr		%r6
+	oris		%r7, %r6, 0x0200		// MSR_VEC (bit 25)
+	mtmsr		%r7
+	isync
+
+	subi		%r1, %r1, 224			// 12 vregs*16 + VSCR 16 + VRSAVE slot 16
+	li			%r5, 0
+	stvx		%v20, %r5, %r1
+	li			%r5, 16
+	stvx		%v21, %r5, %r1
+	li			%r5, 32
+	stvx		%v22, %r5, %r1
+	li			%r5, 48
+	stvx		%v23, %r5, %r1
+	li			%r5, 64
+	stvx		%v24, %r5, %r1
+	li			%r5, 80
+	stvx		%v25, %r5, %r1
+	li			%r5, 96
+	stvx		%v26, %r5, %r1
+	li			%r5, 112
+	stvx		%v27, %r5, %r1
+	li			%r5, 128
+	stvx		%v28, %r5, %r1
+	li			%r5, 144
+	stvx		%v29, %r5, %r1
+	li			%r5, 160
+	stvx		%v30, %r5, %r1
+	li			%r5, 176
+	stvx		%v31, %r5, %r1
+	mfvscr		%v0						// v0 is volatile, safe to clobber
+	li			%r5, 192
+	stvx		%v0, %r5, %r1
+	mfspr		%r5, 256				// VRSAVE
+	stw			%r5, 208(%r1)
+
+	mtmsr		%r6						// put the MSR back as we found it
+	isync
+1:
 
 	// push the old regs we need to save on the stack
 	// f31-13
@@ -347,6 +404,58 @@ FUNCTION(ppc_context_switch):
 	lfdu		%f31, 8(%r1)
 
 	addi		%r1, %r1, 8
+
+	// AltiVec last, mirroring the save above: r1 is back to its 16-byte aligned
+	// value here, so the vector slot is where we left it.
+	lis			%r5, gPPCHasAltiVec@ha
+	lbz			%r5, gPPCHasAltiVec@l(%r5)
+	cmpwi		%r5, 0
+	beq			2f
+
+	// Enable the vector unit for the duration of this block. We CANNOT rely on
+	// the caller's MSR: ppc_context_switch() is reached from exception context
+	// (ppc_exception_entry -> reschedule -> arch_thread_context_switch), and
+	// that MSR has FP but not VEC - observed on hardware as srr1 0x00003030
+	// taking a 0xf20 right here. Preserve and restore whatever we were given.
+	mfmsr		%r6
+	oris		%r7, %r6, 0x0200		// MSR_VEC (bit 25)
+	mtmsr		%r7
+	isync
+
+	lwz			%r5, 208(%r1)			// VRSAVE
+	mtspr		256, %r5
+	li			%r5, 192
+	lvx			%v0, %r5, %r1
+	mtvscr		%v0
+	li			%r5, 0
+	lvx			%v20, %r5, %r1
+	li			%r5, 16
+	lvx			%v21, %r5, %r1
+	li			%r5, 32
+	lvx			%v22, %r5, %r1
+	li			%r5, 48
+	lvx			%v23, %r5, %r1
+	li			%r5, 64
+	lvx			%v24, %r5, %r1
+	li			%r5, 80
+	lvx			%v25, %r5, %r1
+	li			%r5, 96
+	lvx			%v26, %r5, %r1
+	li			%r5, 112
+	lvx			%v27, %r5, %r1
+	li			%r5, 128
+	lvx			%v28, %r5, %r1
+	li			%r5, 144
+	lvx			%v29, %r5, %r1
+	li			%r5, 160
+	lvx			%v30, %r5, %r1
+	li			%r5, 176
+	lvx			%v31, %r5, %r1
+	addi		%r1, %r1, 224
+
+	mtmsr		%r6						// put the MSR back as we found it
+	isync
+2:
 
 	blr
 FUNCTION_END(ppc_context_switch)
