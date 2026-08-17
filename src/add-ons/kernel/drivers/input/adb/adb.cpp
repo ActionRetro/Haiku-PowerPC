@@ -598,7 +598,22 @@ adb_pmu_interrupt(void* arg)
 		pmu_wait_for_ack();
 		pmu_send_byte(PMU_INT_ACK);
 	} else if (sPmuState == PMU_IDLE && sPmuReqActive) {
-		pmu_start();
+		// Apply the same bus-clear rule as pmu_queue_wait() before
+		// transmitting: never start a command while the PMU is asserting
+		// extint-gpio1 (data pending, active low). Doing so desyncs the
+		// protocol and the PMU powers the machine off. pmu_queue_wait() waits
+		// for this condition in thread context, but we can reach here from the
+		// interrupt handler while it is still waiting - and under heavy
+		// interrupt load (an install: USB + ATA) that race is easy to lose.
+		uint8 gpio = 0xff;
+		if (sGpioExt1 != 0) {
+			gpio = *(volatile uint8*)sGpioExt1;
+			asm volatile("eieio" ::: "memory");
+		}
+		if ((gpio & KEYLARGO_GPIO_LEVEL) != 0)
+			pmu_start();
+		// else: leave sPmuReqActive set - pmu_queue_wait() keeps polling and
+		// will start it once the bus really is clear.
 	}
 
 	if (sPmuDidInput) {
