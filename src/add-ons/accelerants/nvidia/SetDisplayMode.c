@@ -293,7 +293,10 @@ status_t SET_DISPLAY_MODE(display_mode *mode_to_set)
 	 * Maybe later we can forget about non-DMA mode (depends on 3D acceleration
 	 * attempts). */
 #ifdef __POWERPC__
-	/* ppc rung 2: 2D engine off (modeset only; software rendering) */
+	/* ppc: app_server never calls the accelerant's 2D hooks - AccelerantHWInterface
+	 * always double-buffers into a system-RAM MallocBuffer and software-renders,
+	 * so the 2D engine has nothing to do. (Only DWindowHWInterface, the
+	 * run-in-a-window test backend, fetches those hooks.) Leave the engine off. */
 	(void)0;
 #else
 	if (!si->settings.block_acc) {

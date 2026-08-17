@@ -790,8 +790,23 @@ map_device(device_info *di)
 	}
 
 	//fixme: retest for card coldstart and PCI/virt_mem mapping!!
-	/* remember the DMA address of the frame buffer for BDirectWindow?? purposes */
-	si->framebuffer_pci = (void*)(uintptr_t)physicalAddress;
+	/* Remember the frame buffer's address AS THE CARD SEES IT ON THE PCI BUS.
+	 * This is NOT physicalAddress on ppc: that is the CPU-physical ("host")
+	 * view, which is what map_physical_memory() above needs, but on UniNorth
+	 * the two differ. The acceleration engine's DMA object is programmed with
+	 * this value (the command pushbuffer lives inside the framebuffer), so
+	 * handing it the host view would make it fetch commands from nowhere.
+	 * On x86 the two views are identical. */
+	si->framebuffer_pci
+		= (void*)(uintptr_t)di->pcii.u.h0.base_registers_pci[frame_buffer];
+#ifdef __POWERPC__
+	dprintf("nvidia/ppc: fb host-phys 0x%08lx  pci-bus 0x%08lx%s\n",
+		(unsigned long)physicalAddress,
+		(unsigned long)di->pcii.u.h0.base_registers_pci[frame_buffer],
+		(physicalAddress
+			== (phys_addr_t)di->pcii.u.h0.base_registers_pci[frame_buffer])
+			? "  (identical)" : "  (DIFFER - split matters)");
+#endif
 
 	/* note the amount of memory mapped by the kerneldriver so we can make sure we
 	 * don't attempt to adress more later on */
