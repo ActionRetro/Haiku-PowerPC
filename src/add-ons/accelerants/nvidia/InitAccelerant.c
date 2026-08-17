@@ -40,14 +40,38 @@ static status_t init_common(int the_fd) {
 	}
 	// LOG is now available, si !NULL
 #ifdef __POWERPC__
-	/* ppc: force full accelerant logging to /boot/home/nvidia.*.log */
-	si->settings.logmask = 0xffffffff;
-	/* ppc: software rendering only - block hardware 2D acceleration so the
-	 * accelerant does NOT export FILL_RECTANGLE/SCREEN_TO_SCREEN_BLIT/etc.
-	 * (the 2D engine is not initialized on ppc; app_server driving it would
-	 * corrupt the framebuffer). app_server then renders in software + the
-	 * plain memcpy copy-to-front path. */
+	/* ppc: targeted accelerant logging to /boot/home/nvidia.*.log.
+	 * 0xffffffff meant EVERY module at EVERY level, which wrote a huge log on
+	 * every mode set and visibly slowed startup. The LOG macro splits the mask:
+	 * the high 28 bits select MODULE_BIT, the low nibble selects the level. So
+	 * this enables level 1 only, and only for the two modules carrying the ppc
+	 * acceleration diagnostics:
+	 *     0x00080000  engine/nv_acc.c    (ppc-acc: engine + FIFO + pixel format)
+	 *     0x00200000  SetDisplayMode.c   (ppc-acc: STAGE / draw test)
+	 *     0x00000001  level 1
+	 * Raise to 0xffffffff temporarily when the full CRTC/DAC dumps are wanted. */
+	si->settings.logmask = 0x00280001;
+	/* ppc: 2D acceleration is ENABLED. The old comment here claimed "the 2D
+	 * engine is not initialized on ppc" - it is now, and it demonstrably works:
+	 * a rectangle filled by the engine and a second one blitted from it were
+	 * both visible on hardware. What had actually been broken was a big-endian
+	 * read of the 16-bit FifoFree field, which made every FIFO wait time out
+	 * (see nv_acc.h and b62b98cfed).
+	 *
+	 * Exporting the hooks only matters because AccelerantHWInterface now has a
+	 * caller for them (HWInterface::AcceleratedBlit); before that, nothing in
+	 * app_server fetched a single acceleration hook. */
+	/* ppc: acceleration DISABLED for now - it works, but the engine discards
+	 * the byte it treats as X padding, which in our A,R,G,B framebuffer layout
+	 * is BLUE, so accelerated blits turn white windows yellow. Everything else
+	 * (engine init, the big-endian FifoFree fix, AcceleratedBlit in app_server)
+	 * is in place; set this to false to turn it back on once the pixel format
+	 * question is solved. See the 2D notes for what has been ruled out. */
 	si->settings.block_acc = true;
+	/* PIO, not DMA: CHKA in GetAccelerantHook.c exports the _DMA hook variants
+	 * when dma_acc is set (it defaults true), but we initialise the PIO engine
+	 * via nv_acc_init(). Mismatched, the DMA blit silently does nothing. */
+	si->settings.dma_acc = false;
 	/* ppc: HARDWARE cursor. This was previously forced off on the grounds that
 	 * the hw cursor path "is a suspected corruptor" - but that was a guess from
 	 * before modesetting worked, and was never verified. With a software cursor

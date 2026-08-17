@@ -86,6 +86,10 @@ public:
 	virtual	RenderingBuffer*	BackBuffer() const;
 	virtual	bool				IsDoubleBuffered() const;
 
+			// Hardware screen-to-screen copy; see HWInterface::AcceleratedBlit.
+	virtual	bool				AcceleratedBlit(const BRect& dst,
+									int32 xOffset, int32 yOffset);
+
 protected:
 	virtual	void				_CopyBackToFront(/*const*/ BRegion& region);
 
@@ -156,6 +160,13 @@ private:
 			allocate_overlay			fAccAllocateOverlay;
 			release_overlay				fAccReleaseOverlay;
 			configure_overlay			fAccConfigureOverlay;
+
+			// 2D acceleration (see AcceleratedBlit)
+			acquire_engine				fAccAcquireEngine;
+			release_engine				fAccReleaseEngine;
+			screen_to_screen_blit		fAccScreenBlit;
+			wait_engine_idle			fAccWaitEngineIdle;
+			// NB: fEngineToken/fSyncToken already exist further up this class.
 
 			frame_buffer_config	fFrameBufferConfig;
 			int					fModeCount;

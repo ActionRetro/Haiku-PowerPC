@@ -434,6 +434,72 @@ AccelerantHWInterface::_UpdateHooksAfterModeChange()
 		= (release_overlay)fAccelerantHook(B_RELEASE_OVERLAY, NULL);
 	fAccConfigureOverlay
 		= (configure_overlay)fAccelerantHook(B_CONFIGURE_OVERLAY, NULL);
+
+	// 2D acceleration. These have had no caller in app_server until now - only
+	// DWindowHWInterface, the test backend, ever fetched them, and it never
+	// called them either.
+	fAccAcquireEngine = (acquire_engine)fAccelerantHook(B_ACQUIRE_ENGINE, NULL);
+	fAccReleaseEngine = (release_engine)fAccelerantHook(B_RELEASE_ENGINE, NULL);
+	fAccScreenBlit
+		= (screen_to_screen_blit)fAccelerantHook(B_SCREEN_TO_SCREEN_BLIT, NULL);
+	fAccWaitEngineIdle
+		= (wait_engine_idle)fAccelerantHook(B_WAIT_ENGINE_IDLE, NULL);
+}
+
+
+/*!	Moves \a dst within the front buffer using the graphics engine, the source
+	being the same rectangle offset back by (\a xOffset, \a yOffset).
+
+	Returns true only if the front buffer now holds the result. The caller then
+	skips Invalidate(), which is the entire point: that would otherwise copy the
+	region from the system-RAM back buffer across the bus, byte-swapping every
+	pixel on ppc.
+*/
+bool
+AccelerantHWInterface::AcceleratedBlit(const BRect& dst, int32 xOffset,
+	int32 yOffset)
+{
+	if (fAccScreenBlit == NULL || fAccAcquireEngine == NULL
+		|| fAccReleaseEngine == NULL || !dst.IsValid()) {
+		return false;
+	}
+
+	// The accelerant takes uint16s, so anything negative or huge is not ours
+	// to handle - fall back rather than wrap around.
+	float srcLeft = dst.left - xOffset;
+	float srcTop = dst.top - yOffset;
+	if (srcLeft < 0 || srcTop < 0 || dst.left < 0 || dst.top < 0
+		|| dst.right > 65535 || dst.bottom > 65535) {
+		return false;
+	}
+
+	blit_params params;
+	params.src_left = (uint16)srcLeft;
+	params.src_top = (uint16)srcTop;
+	params.dest_left = (uint16)dst.left;
+	params.dest_top = (uint16)dst.top;
+	// blit_params counts from zero: 0 means one pixel/line, which is exactly
+	// what IntegerWidth()/IntegerHeight() return (right - left).
+	params.width = (uint16)dst.IntegerWidth();
+	params.height = (uint16)dst.IntegerHeight();
+
+	engine_token* engineToken = NULL;
+	if (fAccAcquireEngine(B_2D_ACCELERATION, 0xff, &fSyncToken, &engineToken)
+			!= B_OK
+		|| engineToken == NULL) {
+		return false;
+	}
+
+	fAccScreenBlit(engineToken, &params, 1);
+
+	// Wait for the engine before returning, so a queued blit cannot race a
+	// later software CopyBackToFront() writing the same pixels from the other
+	// direction. Still far cheaper than sending the region over the bus.
+	if (fAccWaitEngineIdle != NULL)
+		fAccWaitEngineIdle();
+
+	fAccReleaseEngine(engineToken, &fSyncToken);
+	return true;
 }
 
 
@@ -627,9 +693,21 @@ AccelerantHWInterface::SetMode(const display_mode& mode)
 	if (fDisplayMode.space == B_RGB15)
 		depth = 15;
 
+#ifdef __POWERPC__
+	/* ppc: disable the on-screen kernel framebuffer console (pass base 0) so
+	 * continuous kernel dprintf (the USB-OHCI poll + phantom-controller probe
+	 * spam) never scrolls over the composited desktop - which on a 32bpp nvidia
+	 * panel appears as whole-screen garble (the console renders/scrolls at the
+	 * stale boot 8bpp layout). Kernel debug output still reaches syslog; there is
+	 * no serial console on this hardware. Trade-off: no on-screen KDL. */
+	_kern_frame_buffer_update(0,
+		fFrontBuffer->Width(), fFrontBuffer->Height(),
+		depth, fFrameBufferConfig.bytes_per_row);
+#else
 	_kern_frame_buffer_update((addr_t)fFrameBufferConfig.frame_buffer,
 		fFrontBuffer->Width(), fFrontBuffer->Height(),
 		depth, fFrameBufferConfig.bytes_per_row);
+#endif
 #endif
 
 	_UpdateHooksAfterModeChange();

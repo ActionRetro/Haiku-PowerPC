@@ -603,7 +603,12 @@ DrawingEngine::CopyRegion(/*const*/ BRegion* region, int32 xOffset,
 		inDegreeZeroNodes.pop();
 
 		BRect touched = CopyRect(n->rect, xOffset, yOffset);
-		fGraphicsCard->Invalidate(touched);
+		// CopyRect() has already moved the pixels in the system-RAM back buffer.
+		// If the card can perform the same move in the front buffer itself, the
+		// region never has to travel across the bus at all - so only fall back to
+		// Invalidate() (i.e. CopyBackToFront) when it cannot.
+		if (!fGraphicsCard->AcceleratedBlit(touched, xOffset, yOffset))
+			fGraphicsCard->Invalidate(touched);
 
 		for (int32 k = 0; k < n->next_pointer; k++) {
 			n->pointers[k]->in_degree--;

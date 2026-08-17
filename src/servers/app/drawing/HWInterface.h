@@ -141,6 +141,15 @@ public:
 	virtual	RenderingBuffer*	BackBuffer() const = 0;
 	virtual	bool				IsDoubleBuffered() const = 0;
 
+			// Move a rectangle within the FRONT buffer using hardware
+			// acceleration. Returns true only if the front buffer now holds the
+			// result, in which case the caller must NOT Invalidate() the region -
+			// doing so would push the very pixels we just avoided sending across
+			// the bus. Default false: software path, unchanged behaviour.
+	virtual	bool				AcceleratedBlit(const BRect& dst,
+									int32 xOffset, int32 yOffset)
+									{ return false; }
+
 	// Invalidate is used for scheduling an area for updating
 	virtual	status_t			InvalidateRegion(const BRegion& region);
 	virtual	status_t			Invalidate(const BRect& frame);

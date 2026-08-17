@@ -9,6 +9,15 @@ extern area_id my_mode_list_area;
 extern int accelerantIsClone;
 #ifdef __POWERPC__
 extern uint8 ppc_crtc_shadow[2][256];
+
+/* ppc 2D acceleration bring-up stage (see nv_ppc_accel_stage1.py):
+ *   1 = initialise the engine ONLY. No accelerant hooks are exported (that is
+ *       enforced independently by block_acc in InitAccelerant.c), so app_server
+ *       keeps drawing in software and a broken engine cannot corrupt or hang
+ *       the desktop. Reaching a stable desktop means engine init works.
+ *   2 = also let app_server use it - which additionally requires accelerated
+ *       operation virtuals on HWInterface, since none exist today. */
+#define NV_PPC_ACC_STAGE 1
 extern uint8 ppc_seq_shadow[256];
 extern uint8 ppc_grph_shadow[256];
 #endif

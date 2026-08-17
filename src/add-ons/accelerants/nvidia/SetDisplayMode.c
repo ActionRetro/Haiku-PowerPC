@@ -293,11 +293,25 @@ status_t SET_DISPLAY_MODE(display_mode *mode_to_set)
 	 * Maybe later we can forget about non-DMA mode (depends on 3D acceleration
 	 * attempts). */
 #ifdef __POWERPC__
-	/* ppc: app_server never calls the accelerant's 2D hooks - AccelerantHWInterface
-	 * always double-buffers into a system-RAM MallocBuffer and software-renders,
-	 * so the 2D engine has nothing to do. (Only DWindowHWInterface, the
-	 * run-in-a-window test backend, fetches those hooks.) Leave the engine off. */
-	(void)0;
+	/* ppc 2D acceleration bring-up - see NV_PPC_ACC_STAGE in nv_globals.h.
+	 *
+	 * app_server still will not USE the engine: AccelerantHWInterface never
+	 * fetches the 2D hooks, and block_acc (InitAccelerant.c) keeps them
+	 * unexported anyway. This only answers "does the engine come up on ppc",
+	 * which gates all the app_server-side work and is otherwise unknown.
+	 *
+	 * PIO (nv_acc_init), NOT DMA: PIO drives the engine through ACCW ->
+	 * NV_REG32, the register aperture the modesetting work already proved
+	 * correct. The DMA path writes a pushbuffer into VRAM that the GPU reads
+	 * itself, which is a separate byte-order problem on big-endian AND depends
+	 * on the PCI-bus vs CPU-physical framebuffer address split - one unknown at
+	 * a time. DMA is the next stage.
+	 */
+	LOG(1, ("ppc-acc: STAGE %d, initialising 2D engine (PIO)\n",
+		NV_PPC_ACC_STAGE));
+	nv_acc_init();
+	LOG(1, ("ppc-acc: nv_acc_init() returned, engine init survived\n"));
+
 #else
 	if (!si->settings.block_acc) {
 		if (!si->settings.dma_acc)
