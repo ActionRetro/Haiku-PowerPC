@@ -7,8 +7,8 @@
 
 #include "nv_std.h"
 
-/* defined next to the cursor format knob further down this file */
-static void nv_crtc_cursor_config_refresh(void);
+/* defined next to the cursor code further down this file */
+static void nv_crtc_cursor_config(void);
 
 /*
 	Enable/Disable interrupts.  Just a wrapper around the
@@ -858,16 +858,8 @@ status_t nv_crtc_cursor_init()
 		fb[i]=0;
 	}
 
-	/* Program the cursor geometry and colour format. Tunable at runtime via
-	 * NV_CURCONF_FILE (see the field map above); with no file present this
-	 * writes the known-good $02000100 = 32x32, 16bit colour, no doublescan.
-	 *
-	 * ★ The comment that used to sit here said this chip has no reachable
-	 * alpha-blended cursor, on the strength of a 25-value sweep. It has one:
-	 * NV_CURCONF_ARGB_PM above is what nouveau programs for NV11+. The sweep
-	 * missed it because it only ever paired CUR_BPP_32 with 32x32 geometry,
-	 * and this hardware fetches a 32bpp cursor 64 pixels to the row. */
-	nv_crtc_cursor_config_refresh();
+	/* 64x64 ARGB, pre-multiplied alpha, on both heads */
+	nv_crtc_cursor_config();
 
 	/* activate hardware-sync between cursor updates and vertical retrace where
 	 * available */
@@ -924,33 +916,19 @@ status_t nv_crtc_cursor_hide()
  * fine either way, but 0x8000 (black) and 0x7fff (invert) are not. */
 #ifdef __POWERPC__
 #	define NV_CURSOR_PIX(p_) ((uint16)__builtin_bswap16((uint16)(p_)))
-#	define NV_CURSOR_SWAP32(p_) ((uint32)__builtin_bswap32((uint32)(p_)))
 #else
 #	define NV_CURSOR_PIX(p_) (p_)
-#	define NV_CURSOR_SWAP32(p_) (p_)
 #endif
 
 /* ---- NV32_CURCONF field layout (nouveau dispnv04/nvreg.h) ----------------
- * The driver's own known-good value decodes exactly against this map:
- *     0x02000100 = CUR_LINES_32 | ADDRESS_SPACE_PNVM
- * which is what its comment says it is ("32x32 pixel, 16bit color
- * cursorbitmap, no doublescan"), so the map can be trusted.
+ * Checked against the value this driver already shipped: $02000100 decodes to
+ * CUR_LINES_32 | ADDRESS_SPACE_PNVM, which is exactly what its comment always
+ * claimed ("32x32 pixel, 16bit color cursorbitmap, no doublescan").
  *
  * ★ CUR_BLEND_ALPHA (b28) is NOT an "enable alpha" bit - it selects
- * NON-pre-multiplied alpha. nouveau's nv11_cursor_upload():
- *
- *     nv11+ supports premultiplied (PM), or non-premultiplied (NPM) alpha
- *     cursors ... NPM mode needs NV_PCRTC_CURSOR_CONFIG_ALPHA_BLEND set and
- *     is what the blob uses, however we get given PM cursors so we use PM mode
- *
- * A 32bpp cursor is alpha-blended either way. Haiku, like nouveau, hands us
- * PRE-multiplied cursors, so the right configuration leaves b28 CLEAR.
- *
- * ★ What was actually missing is CUR_BPP_32 *together with 64x64 geometry*.
- * nouveau always programs LINES_64 | PIXELS_64 | PNVM and adds BPP_32 for
- * chipset >= 0x11 (NV34 is 0x34); it never drives a 32x32 32bpp cursor. An
- * earlier sweep did try b12, but only ever with LINES_32, so the buffer stride
- * and the hardware's fetch stride never agreed. */
+ * NON-pre-multiplied alpha, and a 32bpp cursor blends either way. Haiku hands
+ * out PRE-multiplied cursor bitmaps, so the right configuration leaves it
+ * CLEAR. Setting it puts this chip in an invert mode instead. */
 #define NV_CURCONF_ENABLE		(1 << 0)
 #define NV_CURCONF_DOUBLE_SCAN		(1 << 4)
 #define NV_CURCONF_ADDRESS_SPACE_PNVM	(1 << 8)
@@ -960,113 +938,31 @@ status_t nv_crtc_cursor_hide()
 #define NV_CURCONF_CUR_LINES_64		(4 << 24)
 #define NV_CURCONF_CUR_BLEND_ALPHA	(1 << 28)
 
-/* the value this hardware has always used: 32x32, 16bit, one alpha bit */
-#define NV_CURCONF_KNOWN_GOOD \
-	(NV_CURCONF_CUR_LINES_32 | NV_CURCONF_ADDRESS_SPACE_PNVM)
-/* the target, and exactly what nouveau programs for NV11+: 64x64 ARGB with
- * pre-multiplied alpha blending (CUR_BLEND_ALPHA deliberately clear) */
+/* 64x64 ARGB with pre-multiplied alpha - what nouveau programs for NV11+.
+ * A 32bpp cursor on this chip is always 64x64; pairing CUR_BPP_32 with 32x32
+ * geometry makes the stride we write and the stride it fetches disagree. */
 #define NV_CURCONF_ARGB_PM \
 	(NV_CURCONF_CUR_LINES_64 | NV_CURCONF_CUR_PIXELS_64 \
 	 | NV_CURCONF_ADDRESS_SPACE_PNVM | NV_CURCONF_CUR_BPP_32)
 
-/* ---- runtime-tunable cursor format (ppc) ---------------------------------
- * Two unknowns remain once the register is right - whether the blend wants
- * pre-multiplied or straight alpha, and the byte order of a 32bpp cursor
- * pixel. Reading them from a file that is re-checked on every cursor SHAPE
- * change makes each candidate a text edit and a mouse move instead of a
- * reflash and a boot.
+/* Program the cursor format on BOTH heads.
  *
- *     /boot/home/nv_curconf.txt
- *     <CURCONF hex> <bpp 16|32> <dim> <premul 0|1> <swap 0|1>
- *
- * Missing / empty / unparsable -> the known-good 16bpp cursor, so a bad edit
- * cannot take the pointer away. */
-#define NV_CURCONF_FILE		"/boot/home/nv_curconf.txt"
-
-static uint32 nv_curconf_value  = NV_CURCONF_KNOWN_GOOD;
-static int    nv_curconf_bpp    = 16;	/* 16 = A1R5G5B5, 32 = ARGB */
-static int    nv_curconf_dim    = 32;	/* side of the square cursor bitmap */
-static int    nv_curconf_premul = 1;	/* 1 = pass alpha through as delivered */
-static int    nv_curconf_swap   = 0;	/* 1 = bswap32 the 32bpp pixel */
-
-/* Re-read the tuning file, program CURCONF, and log only when something moved
- * (this runs on every cursor shape change). */
-static void nv_crtc_cursor_config_refresh(void)
+ * ★ Cursor.c calls nv_crtc_cursor_define_bitmap() directly, but
+ * nv_crtc_cursor_init() is reached as head1_cursor_init - and
+ * setup_virtualized_heads() maps head1 onto CRTC2 whenever si->ps.crtc2_prim
+ * is set, which nv_info.c does for a dozen laptop panel configurations. On
+ * such a machine NV32_CURCONF is the head that is NOT driving the display:
+ * writes to it read back perfectly and change nothing on screen, while
+ * nv_crtc2_cursor_init's own hard-coded $02000100 keeps the visible cursor at
+ * 32x32 16bpp. That is indistinguishable from "this chip cannot do a 32bpp
+ * cursor". The bitmap itself lives at si->framebuffer and is shared by both
+ * heads, so configuring both is harmless and removes the question. */
+static void nv_crtc_cursor_config(void)
 {
-	FILE* f;
-	char line[128];
-	uint32 conf = NV_CURCONF_KNOWN_GOOD;
-	int bpp = 16, dim = 32, premul = 1, swap = 0;
-	bool changed;
-
-	f = fopen(NV_CURCONF_FILE, "r");
-	if (f != NULL)
-	{
-		if (fgets(line, sizeof(line), f) != NULL)
-		{
-			/* premul/swap are optional so an older 3-field file still works */
-			int got = sscanf(line, "%x %d %d %d %d",
-				&conf, &bpp, &dim, &premul, &swap);
-			if (got < 3)
-			{
-				/* a half-written or commented file must not take the cursor
-				 * away: fall back to what is known to work */
-				conf = NV_CURCONF_KNOWN_GOOD;
-				bpp = 16; dim = 32; premul = 1; swap = 0;
-			}
-			if (got < 4) premul = 1;
-			if (got < 5) swap = 0;
-		}
-		fclose(f);
-	}
-
-	/* Refuse anything we cannot actually write. The cursor bitmap sits at the
-	 * very start of VRAM with the visible framebuffer immediately after it, so
-	 * an out-of-range size in a scratch file would corrupt the display. */
-	if (dim < 1 || dim > NV_CURSOR_MAX_DIM) dim = 32;
-	if (bpp != 16 && bpp != 32) bpp = 16;
-	if ((dim * dim * (bpp / 8)) > NV_CURSOR_MAX_BYTES) { dim = 32; bpp = 16; }
-	premul = (premul != 0);
-	swap = (swap != 0);
-
-	changed = (conf != nv_curconf_value) || (bpp != nv_curconf_bpp)
-		|| (dim != nv_curconf_dim) || (premul != nv_curconf_premul)
-		|| (swap != nv_curconf_swap);
-
-	nv_curconf_value = conf;
-	nv_curconf_bpp = bpp;
-	nv_curconf_dim = dim;
-	nv_curconf_premul = premul;
-	nv_curconf_swap = swap;
-
 	set_crtc_owner(0);
 
-	/* ★ Program BOTH heads' copies of the register.
-	 *
-	 * Cursor.c calls nv_crtc_cursor_define_bitmap() directly rather than
-	 * through the head1_* indirection, but nv_crtc_cursor_init() is reached as
-	 * head1_cursor_init - and setup_virtualized_heads() maps head1 onto CRTC2
-	 * whenever si->ps.crtc2_prim is set, which nv_info.c does for a dozen
-	 * laptop panel configurations. On such a machine NV32_CURCONF is the head
-	 * that is NOT driving the display: writes to it read back perfectly and
-	 * change nothing on screen, while nv_crtc2_cursor_init's own hard-coded
-	 * $02000100 keeps the visible cursor at 32x32 16bpp.
-	 *
-	 * That is indistinguishable from "this chip cannot do a 32bpp cursor", and
-	 * it is the most likely reason a 25-value sweep of this register produced
-	 * 25 identical misses. The cursor bitmap itself lives at si->framebuffer
-	 * and is shared by both heads, so configuring both is harmless and settles
-	 * the question instead of betting on the answer. */
-	NV_REG32(NV32_CURCONF) = conf;
-	NV_REG32(NV32_2CURCONF) = conf;
-
-	if (changed)
-	{
-		LOG(4,("CRTC: CURCONF $%08x -> head0 $%08x head1 $%08x, crtc2_prim %d, "
-			"cursor %dbpp %dx%d premul %d swap %d\n", conf,
-			NV_REG32(NV32_CURCONF), NV_REG32(NV32_2CURCONF),
-			si->ps.crtc2_prim, bpp, dim, dim, premul, swap));
-	}
+	NV_REG32(NV32_CURCONF) = NV_CURCONF_ARGB_PM;
+	NV_REG32(NV32_2CURCONF) = NV_CURCONF_ARGB_PM;
 }
 
 /* set up cursor shape from an ARGB bitmap (Haiku's own cursors).
@@ -1078,32 +974,25 @@ static void nv_crtc_cursor_config_refresh(void)
 status_t nv_crtc_cursor_define_bitmap(uint16 width, uint16 height,
 	const uint8* bitmap, uint16 bytesPerRow)
 {
-	int x, y, dim;
-	vuint16 *cursor;
-	vuint32 *cursor32;
-
-	/* pick up any change to the tuning file before writing the bitmap, so the
-	 * format the hardware is told about and the format we write always agree */
-	nv_crtc_cursor_config_refresh();
-	dim = nv_curconf_dim;
+	int x, y;
+	vuint32 *cursor;
 
 	if (bitmap == NULL || width == 0 || height == 0
-		|| width > dim || height > dim)
+		|| width > NV_CURSOR_MAX_DIM || height > NV_CURSOR_MAX_DIM)
 		return B_ERROR;
 
 	/* get a pointer to the cursor */
-	cursor = (vuint16*) si->framebuffer;
-	cursor32 = (vuint32*) si->framebuffer;
+	cursor = (vuint32*) si->framebuffer;
 
-	for (y = 0; y < dim; y++)
+	for (y = 0; y < NV_CURSOR_MAX_DIM; y++)
 	{
 		const uint8* src = bitmap + (y * bytesPerRow);
-		for (x = 0; x < dim; x++)
+
+		for (x = 0; x < NV_CURSOR_MAX_DIM; x++)
 		{
-			/* preset transparant: the hardware buffer is a fixed square, so
+			/* preset transparent: the hardware buffer is a fixed 64x64, so
 			 * anything outside the supplied bitmap has to be cleared */
-			uint16 pixel = 0x0000;
-			uint32 pixel32 = 0x00000000;
+			uint32 pixel = 0x00000000;
 
 			if ((x < width) && (y < height))
 			{
@@ -1115,71 +1004,29 @@ status_t nv_crtc_cursor_define_bitmap(uint16 width, uint16 height,
 				uint8 r = src[(x * 4) + 2];
 				uint8 a = src[(x * 4) + 3];
 
-				/* app_server's cursor bitmaps are PRE-multiplied (see the
-				 * blend loop in HWInterface::_DrawCursor, "assuming
-				 * pre-multiplied cursor bitmap"), so a 60%-opaque white pixel
-				 * arrives as mid-grey. Keep both forms: the 1-bit-alpha path
-				 * always wants the un-multiplied colour back, and which one
-				 * the hardware blend wants is the "premul" knob.
-				 *
-				 * ★ Deriving these per-pixel INSIDE the a >= 128 branch - as
-				 * an earlier version did - produced a bitmap that was straight
-				 * above the threshold and pre-multiplied below it. That is
-				 * incoherent under any blend mode, and it is why the earlier
-				 * 32bpp attempts could not have looked right even with the
-				 * correct CURCONF. */
-				uint8 pr = r, pg = g, pb = b;	/* as delivered (pre-mult) */
-
+				/* nouveau nv11_cursor_upload(): "hw gets unhappy if alpha <=
+				 * rgb values. for a PM image 'less than' shouldn't happen; fix
+				 * 'equal to' case by adding one to alpha channel (slightly
+				 * inaccurate, but so is attempting to get back to NPM images,
+				 * due to limits of integer precision)". A pre-multiplied WHITE
+				 * edge pixel has rgb == alpha exactly, so this is not a corner
+				 * case - it is every anti-aliased white edge. */
 				if (a > 0 && a < 255)
-				{
-					uint32 rr = ((uint32)r * 255 + (a >> 1)) / a;
-					uint32 gg = ((uint32)g * 255 + (a >> 1)) / a;
-					uint32 bb = ((uint32)b * 255 + (a >> 1)) / a;
-					/* pre-multiplied data cannot exceed alpha, but rounding
-					 * can, so clamp */
-					r = (uint8)(rr > 255 ? 255 : rr);
-					g = (uint8)(gg > 255 ? 255 : gg);
-					b = (uint8)(bb > 255 ? 255 : bb);
-				}
+					a++;
 
-				/* The 16bpp hardware cursor has a single bit of alpha, so an
-				 * anti-aliased edge pixel has to pick a side - and having
-				 * picked "opaque" it needs its real colour back, or it draws
-				 * a grey fringe right around the cursor. */
-				if (a >= 128)
-				{
-					pixel = 0x8000
-						| ((uint16)(r >> 3) << 10)
-						| ((uint16)(g >> 3) << 5)
-						|  (uint16)(b >> 3);
-				}
-
-				if (nv_curconf_premul)
-				{
-					/* nouveau nv11_cursor_upload(): "hw gets unhappy if
-					 * alpha <= rgb values. for a PM image 'less than'
-					 * shouldn't happen; fix 'equal to' case by adding one
-					 * to alpha channel (slightly inaccurate, but so is
-					 * attempting to get back to NPM images, due to limits
-					 * of integer precision)" */
-					uint8 pa = a;
-					if (pa > 0 && pa < 255) pa++;
-
-					pixel32 = ((uint32)pa << 24) | ((uint32)pr << 16)
-						| ((uint32)pg << 8) | (uint32)pb;
-				}
-				else
-					pixel32 = ((uint32)a << 24) | ((uint32)r << 16)
-						| ((uint32)g << 8) | (uint32)b;
+				/* Haiku's cursor bitmaps are already PRE-multiplied (see the
+				 * blend loop in HWInterface::_DrawCursor), which is the mode
+				 * this hardware is in, so the data passes through untouched.
+				 *
+				 * No byte swap: nouveau byte-swaps the 32bpp cursor pixel only
+				 * on chipset 0x11, and NV34 wants the native big-endian word.
+				 * (The 16bpp cursor path above does need a bswap16 - the two
+				 * fetch paths genuinely differ on this chip.) */
+				pixel = ((uint32)a << 24) | ((uint32)r << 16)
+					| ((uint32)g << 8) | (uint32)b;
 			}
 
-			if (nv_curconf_bpp == 32)
-			{
-				cursor32[x + (y * dim)] = nv_curconf_swap
-					? NV_CURSOR_SWAP32(pixel32) : pixel32;
-			}
-			else
-				cursor[x + (y * dim)] = NV_CURSOR_PIX(pixel);
+			cursor[x + (y * NV_CURSOR_MAX_DIM)] = pixel;
 		}
 	}
 

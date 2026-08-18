@@ -85,9 +85,9 @@ status_t nv_crtc_mem_priority(uint8);
 status_t nv_crtc_cursor_init(void);
 status_t nv_crtc_cursor_define(uint8*,uint8*);
 status_t nv_crtc_cursor_define_bitmap(uint16,uint16,const uint8*,uint16);
-/* Worst case hardware cursor: 64x64 at 32bpp. Reserved unconditionally so
- * that changing the cursor format at runtime can never write past the
- * cursor buffer into the visible framebuffer, which follows it in VRAM. */
+/* The hardware cursor is 64x64 at 32bpp: 16kB, reserved unconditionally so
+ * the cursor buffer can never spill into the visible framebuffer, which
+ * follows it in VRAM. */
 #define NV_CURSOR_MAX_DIM	64
 #define NV_CURSOR_MAX_BYTES	(NV_CURSOR_MAX_DIM * NV_CURSOR_MAX_DIM * 4)
 status_t nv_crtc_cursor_position(uint16 x ,uint16 y);
