@@ -328,7 +328,7 @@ status_t SET_DISPLAY_MODE(display_mode *mode_to_set)
 	/* note freemem range */
 	/* first free adress follows hardcursor and workspace */
 	si->engine.threeD.mem_low = si->fbc.bytes_per_row * si->dm.virtual_height;
-	if (si->settings.hardcursor) si->engine.threeD.mem_low += 2048;
+	if (si->settings.hardcursor) si->engine.threeD.mem_low += NV_CURSOR_MAX_BYTES;
 	/* last free adress is end-of-ram minus max space needed for overlay bitmaps */
 	//fixme possible:
 	//if overlay buffers are allocated subtract buffersize from mem_high;

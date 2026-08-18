@@ -50,7 +50,7 @@ static status_t init_common(int the_fd) {
 	 *     0x00200000  SetDisplayMode.c   (ppc-acc: STAGE / draw test)
 	 *     0x00000001  level 1
 	 * Raise to 0xffffffff temporarily when the full CRTC/DAC dumps are wanted. */
-	si->settings.logmask = 0x20280005;	/* nv_acc.c + SetDisplayMode.c + Cursor.c, levels 1 and 4 */
+	si->settings.logmask = 0x202c0005;	/* nv_acc.c + nv_crtc.c + SetDisplayMode.c + Cursor.c, levels 1 and 4 */
 	/* ppc: 2D acceleration is ENABLED. The old comment here claimed "the 2D
 	 * engine is not initialized on ppc" - it is now, and it demonstrably works:
 	 * a rectangle filled by the engine and a second one blitted from it were
@@ -210,8 +210,9 @@ status_t INIT_ACCELERANT(int the_fd)
 	to the app_server later.
 	*/
 	pointer_reservation = 0;
-	/* Nvidia hardcursor needs 2kB space */
-	if (si->settings.hardcursor) pointer_reservation = 2048;
+	/* Nvidia hardcursor: reserve the worst case (64x64 32bpp = 16kB) rather
+	 * than the 2kB a 32x32 16bpp cursor needs, so the format stays tunable */
+	if (si->settings.hardcursor) pointer_reservation = NV_CURSOR_MAX_BYTES;
 
 	si->fbc.frame_buffer = (void *)((char *)si->framebuffer+pointer_reservation);
 	si->fbc.frame_buffer_dma = (void *)((char *)si->framebuffer_pci+pointer_reservation);

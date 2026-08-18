@@ -57,10 +57,11 @@ status_t SET_CURSOR_BITMAP(uint16 width, uint16 height, uint16 hot_x, uint16 hot
 	/* the hardware cursor bitmap is 32x32: bigger cursors are not ours to
 	 * draw, and returning an error makes app_server fall back to software
 	 * for that cursor rather than showing a cropped one */
-	if ((width == 0) || (height == 0) || (width > 32) || (height > 32))
+	if ((width == 0) || (height == 0)
+		|| (width > NV_CURSOR_MAX_DIM) || (height > NV_CURSOR_MAX_DIM))
 	{
-		LOG(4,("SET_CURSOR_BITMAP: %dx%d does not fit the 32x32 hardware "
-			"cursor, declining\n", width, height));
+		LOG(4,("SET_CURSOR_BITMAP: %dx%d does not fit the hardware cursor "
+			"(max %d), declining\n", width, height, NV_CURSOR_MAX_DIM));
 		return B_ERROR;
 	}
 

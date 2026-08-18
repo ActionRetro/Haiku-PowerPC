@@ -418,7 +418,7 @@ PROPOSE_DISPLAY_MODE(display_mode *target, const display_mode *low, const displa
 	mem_reservation = 0;
 	/* checkout space needed for hardcursor (if any) */
 	if (si->settings.hardcursor)
-		mem_reservation = 2048;
+		mem_reservation = NV_CURSOR_MAX_BYTES;
 
 	/* Reserve extra space as a workaround for certain bugs (see DriverInterface.h
 	 * for an explanation). */
