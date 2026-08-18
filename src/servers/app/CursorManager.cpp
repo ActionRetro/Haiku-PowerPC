@@ -28,6 +28,7 @@
 #include <stdio.h>
 
 #include "CursorData.cpp"
+#include "CursorBitmaps.h"
 
 
 CursorManager::CursorManager()
@@ -58,34 +59,42 @@ CursorManager::InitializeCursors(float scale)
 		const uint8* data;
 		uint32 dataLength;
 		BPoint hotspot;
+		const uint8* bitmap;
 
 #define C(IDNAME, NAME, HOTSPOT) {fCursor##NAME, B_CURSOR_ID_##IDNAME, \
-		kCursor##NAME, B_COUNT_OF(kCursor##NAME), HOTSPOT}
+		kCursor##NAME, B_COUNT_OF(kCursor##NAME), HOTSPOT, NULL}
+/* CB: pixel-grid bitmap art in place of the HVIF vector. Its hotspot differs
+ * from the vector version's because it is derived from where the art actually
+ * puts its point rather than imposed on it - forcing this set onto the old
+ * hotspots threw 118 of Grab's 188 pixels off the canvas, because Haiku's Grab
+ * hotspot is (1,1) for a pointer while this art is a centred open hand. */
+#define CB(IDNAME, NAME, HOTSPOT) {fCursor##NAME, B_CURSOR_ID_##IDNAME, \
+		kCursor##NAME, B_COUNT_OF(kCursor##NAME), HOTSPOT, kCursorBitmap##NAME}
 	} standardCursors[] = {
-		{fCursorNoCursor, B_CURSOR_ID_NO_CURSOR, NULL, 0, BPoint(0, 0)},
+		{fCursorNoCursor, B_CURSOR_ID_NO_CURSOR, NULL, 0, BPoint(0, 0), NULL},
 
-		C(SYSTEM_DEFAULT,	SystemDefault,	kHandHotspot),
+		CB(SYSTEM_DEFAULT,	SystemDefault,	BPoint(2, 2)),
 		C(CONTEXT_MENU,		ContextMenu,	kHandHotspot),
-		C(COPY,				Copy,			kHandHotspot),
+		CB(COPY,			Copy,			BPoint(3, 2)),
 		C(CREATE_LINK,		CreateLink,		kHandHotspot),
 		C(CROSS_HAIR,		CrossHair,		BPoint(10, 10)),
-		C(FOLLOW_LINK,		FollowLink,		BPoint(5, 0)),
-		C(GRAB,				Grab,			kHandHotspot),
+		CB(FOLLOW_LINK,		FollowLink,		BPoint(3, 3)),
+		CB(GRAB,			Grab,			BPoint(11, 11)),
 		C(GRABBING,			Grabbing,		kHandHotspot),
-		C(HELP,				Help,			BPoint(0, 8)),
-		C(I_BEAM,			IBeam,			BPoint(7, 9)),
+		CB(HELP,			Help,			BPoint(5, 3)),
+		CB(I_BEAM,			IBeam,			BPoint(12, 10)),
 		C(I_BEAM_HORIZONTAL, IBeamHorizontal, BPoint(8, 8)),
 		C(MOVE,				Move,			kResizeHotspot),
 		C(NOT_ALLOWED,		NotAllowed,		BPoint(8, 8)),
-		C(PROGRESS,			Progress,		BPoint(7, 10)),
+		CB(PROGRESS,		Progress,		BPoint(4, 3)),
 		C(RESIZE_EAST,		ResizeEast,		kResizeHotspot),
-		C(RESIZE_EAST_WEST, ResizeEastWest, kResizeHotspot),
+		CB(RESIZE_EAST_WEST, ResizeEastWest, BPoint(10, 12)),
 		C(RESIZE_NORTH,		ResizeNorth,	kResizeHotspot),
 		C(RESIZE_NORTH_EAST, ResizeNorthEast, kResizeHotspot),
-		C(RESIZE_NORTH_EAST_SOUTH_WEST, ResizeNorthEastSouthWest, kResizeHotspot),
-		C(RESIZE_NORTH_SOUTH, ResizeNorthSouth, kResizeHotspot),
+		CB(RESIZE_NORTH_EAST_SOUTH_WEST, ResizeNorthEastSouthWest, BPoint(12, 12)),
+		CB(RESIZE_NORTH_SOUTH, ResizeNorthSouth, BPoint(12, 10)),
 		C(RESIZE_NORTH_WEST, ResizeNorthWest, kResizeHotspot),
-		C(RESIZE_NORTH_WEST_SOUTH_EAST, ResizeNorthWestSouthEast, kResizeHotspot),
+		CB(RESIZE_NORTH_WEST_SOUTH_EAST, ResizeNorthWestSouthEast, BPoint(12, 12)),
 		C(RESIZE_SOUTH,		ResizeSouth,	kResizeHotspot),
 		C(RESIZE_SOUTH_EAST, ResizeSouthEast, kResizeHotspot),
 		C(RESIZE_SOUTH_WEST, ResizeSouthWest, kResizeHotspot),
@@ -94,10 +103,12 @@ CursorManager::InitializeCursors(float scale)
 		C(ZOOM_OUT,			ZoomOut,		BPoint(6, 6))
 	};
 #undef C
+#undef CB
 
 	for (size_t i = 0; i < B_COUNT_OF(standardCursors); i++) {
 		const StandardCursor& info = standardCursors[i];
-		_InitCursor(info.member, info.id, info.data, info.dataLength, info.hotspot, scale);
+		_InitCursor(info.member, info.id, info.data, info.dataLength, info.hotspot,
+			scale, info.bitmap);
 	}
 }
 
@@ -471,19 +482,68 @@ CursorManager::_RenderVectorCursor(uint32 size, const uint8* vector,
 */
 void
 CursorManager::_InitCursor(ServerCursor*& cursorMember, BCursorID id,
-	const uint8* vector, uint32 vectorSize, const BPoint& hotSpot, float scale)
+	const uint8* vector, uint32 vectorSize, const BPoint& hotSpot, float scale,
+	const uint8* bitmap)
 {
 	int32 cursorSize = (int32)(22 * scale);
 	float shadow = 3 / 10.0;
 	BPoint scaledHotspot((int32)(hotSpot.x * scale), (int32)(hotSpot.y * scale));
 
-	if (vector != NULL) {
-		BBitmap bitmap = _RenderVectorCursor(cursorSize, vector, vectorSize, shadow);
-		cursorMember = new ServerCursor((uint8*)bitmap.Bits(), cursorSize,
-			cursorSize, bitmap.ColorSpace());
-	} else {
-		const unsigned char noCursor[] = {0x00, 0x00, 0x00, 0x00};
-		cursorMember = new ServerCursor(noCursor, 1, 1, B_RGBA32);
+	// the bitmap path below falls through to the vector one on failure, so
+	// this has to start from a known value rather than whatever the member held
+	cursorMember = NULL;
+
+	if (bitmap != NULL) {
+		// Pixel-grid art. It must be scaled by an INTEGER factor with nearest
+		// neighbour: the whole point of this art is that it has no partial
+		// alpha, and any fractional resampling reintroduces exactly that.
+		//
+		// Capped at 2x because the hardware cursor is 64x64 and 22 * 3 = 66
+		// would overflow it, dropping app_server back to a software cursor -
+		// which is what caused cursor ghosting on accelerated window drags.
+		int32 zoom = (int32)(scale + 0.5f);
+		if (zoom < 1)
+			zoom = 1;
+		if (zoom > 2)
+			zoom = 2;
+
+		const int32 size = kCursorBitmapSize * zoom;
+		uint8* scaled = new(std::nothrow) uint8[size * size * 4];
+		if (scaled != NULL) {
+			for (int32 y = 0; y < size; y++) {
+				const uint8* src = bitmap
+					+ (y / zoom) * kCursorBitmapSize * 4;
+				uint8* dst = scaled + y * size * 4;
+				for (int32 x = 0; x < size; x++) {
+					const uint8* s = src + (x / zoom) * 4;
+					dst[x * 4 + 0] = s[0];
+					dst[x * 4 + 1] = s[1];
+					dst[x * 4 + 2] = s[2];
+					dst[x * 4 + 3] = s[3];
+				}
+			}
+
+			cursorMember = new ServerCursor(scaled, size, size, B_RGBA32);
+			delete[] scaled;
+			scaledHotspot.Set((int32)hotSpot.x * zoom, (int32)hotSpot.y * zoom);
+		}
+	}
+
+	// ★ The vector and no-cursor branches must stay bound to EACH OTHER. An
+	// earlier version changed this to "if (cursorMember == NULL && vector !=
+	// NULL)" and left the else where it was, so a successful bitmap cursor
+	// fell into the else and was overwritten by the 1x1 transparent
+	// no-cursor - every bitmap cursor invisible, every vector one fine.
+	if (cursorMember == NULL) {
+		if (vector != NULL) {
+			BBitmap vectorBitmap = _RenderVectorCursor(cursorSize, vector,
+				vectorSize, shadow);
+			cursorMember = new ServerCursor((uint8*)vectorBitmap.Bits(),
+				cursorSize, cursorSize, vectorBitmap.ColorSpace());
+		} else {
+			const unsigned char noCursor[] = {0x00, 0x00, 0x00, 0x00};
+			cursorMember = new ServerCursor(noCursor, 1, 1, B_RGBA32);
+		}
 	}
 
 	cursorMember->SetHotSpot(scaledHotspot);

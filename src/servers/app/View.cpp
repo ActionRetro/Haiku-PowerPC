@@ -1144,8 +1144,20 @@ View::Draw(DrawingEngine* drawingEngine, const BRegion* effectiveClipping,
 				} else {
 					// no tiling at all
 
-					drawingEngine->DrawBitmap(fViewBitmap, fBitmapSource,
-						rect, fBitmapOptions);
+					if (fViewBitmap->ColorSpace() == B_RGBA32
+						&& fViewColor != B_TRANSPARENT_COLOR) {
+						// The bitmap has an alpha channel (e.g. a logo desktop
+						// wallpaper): fill with the view color first, then blend
+						// the bitmap over it so transparent areas show through.
+						drawingEngine->FillRect(rect, fViewColor);
+						drawingEngine->SetDrawingMode(B_OP_ALPHA);
+						drawingEngine->DrawBitmap(fViewBitmap, fBitmapSource,
+							rect, fBitmapOptions);
+						drawingEngine->SetDrawingMode(B_OP_COPY);
+					} else {
+						drawingEngine->DrawBitmap(fViewBitmap, fBitmapSource,
+							rect, fBitmapOptions);
+					}
 					redraw->Exclude(rect);
 				}
 
