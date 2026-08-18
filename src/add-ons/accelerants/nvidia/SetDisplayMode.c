@@ -312,6 +312,7 @@ status_t SET_DISPLAY_MODE(display_mode *mode_to_set)
 	nv_acc_init();
 	LOG(1, ("ppc-acc: nv_acc_init() returned, engine init survived\n"));
 
+
 #else
 	if (!si->settings.block_acc) {
 		if (!si->settings.dma_acc)

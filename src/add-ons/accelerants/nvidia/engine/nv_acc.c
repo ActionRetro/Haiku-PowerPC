@@ -744,16 +744,39 @@ status_t nv_acc_init()
 //		ACCW(PR_CTX1_9, 0x00000c02); /* format is X16RGB16, LSB mono */
 //		ACCW(PR_CTX2_9, 0x00000c02); /* dma_instance 0 valid, instance 1 invalid */
 		break;
+	case B_RGB32_BIG:
+	case B_RGBA32_BIG:
 	case B_RGB32_LITTLE:
 	case B_RGBA32_LITTLE:
+		/* ppc: the _BIG cases are DEFENSIVE ONLY, and were added on a theory
+		 * that turned out to be wrong. On big-endian B_RGB32 does resolve to
+		 * B_RGB32_BIG in principle - but this port measures si->dm.space as
+		 * $00000008, which IS B_RGB32_LITTLE (B_RGB32_BIG would be $1008), so
+		 * the 32bpp branch was always being taken and the engine was always
+		 * configured. Kept because handling both costs nothing and the default
+		 * case silently left the engine unprogrammed. */
+		LOG(1, ("ppc-acc: pixel format: space $%08x -> 32bpp branch\n",
+			(uint32)si->dm.space));
 		/* acc engine */
 		ACCW(FORMATS, 0x000070e5);
 		if (si->ps.card_arch < NV30A)
 			/* set depth 0-5: $7 = X8R8G8B8_Z8R8G8B8, $d = Y32 */
 			ACCW(BPIXEL, 0x0077d777);
 		else
+#ifdef __POWERPC__
+			/* ppc: depth 0 = $c (A8R8G8B8), NOT $7 (X8R8G8B8). The engine treats
+			 * the X byte as padding and writes ZERO into it. Our framebuffer byte
+			 * order is A,R,G,B - HWInterface::_CopyToFront byte-swaps every pixel
+			 * on the way in - so the byte the engine calls padding is actually
+			 * BLUE. Every accelerated blit stripped blue and turned white windows
+			 * yellow. Measured: CPU wrote $11223344, the blit produced $11223300.
+			 * The nibble codes are the driver own, documented in nv_acc_dma.c
+			 * ("set depth 2: $c = A8R8G8B8"). */
+			ACCW(BPIXEL, 0x000000e7);
+#else
 			/* set depth 0-1: $7 = X8R8G8B8_Z8R8G8B8, $e = V8YB8U8YA8 */
 			ACCW(BPIXEL, 0x000000e7);
+#endif
 		ACCW(STRD_FMT, 0x0e0d0d0d);
 		/* PRAMIN */
 		ACCW(PR_CTX1_0, 0x00000e02); /* format is X8RGB24, LSB mono */
@@ -769,7 +792,8 @@ status_t nv_acc_init()
 //		ACCW(PR_CTX2_9, 0x00000e02); /* dma_instance 0 valid, instance 1 invalid */
 		break;
 	default:
-		LOG(8,("ACC: init, invalid bit depth\n"));
+		LOG(1,("ACC: init, invalid bit depth - space $%08x NOT handled, engine "
+			"pixel format left unprogrammed!\n", (uint32)si->dm.space));
 		return B_ERROR;
 	}
 
