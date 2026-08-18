@@ -84,6 +84,7 @@ status_t nv_crtc_dpms(bool, bool, bool, bool);
 status_t nv_crtc_mem_priority(uint8);
 status_t nv_crtc_cursor_init(void);
 status_t nv_crtc_cursor_define(uint8*,uint8*);
+status_t nv_crtc_cursor_define_bitmap(uint16,uint16,const uint8*,uint16);
 status_t nv_crtc_cursor_position(uint16 x ,uint16 y);
 status_t nv_crtc_cursor_show(void);
 status_t nv_crtc_cursor_hide(void);

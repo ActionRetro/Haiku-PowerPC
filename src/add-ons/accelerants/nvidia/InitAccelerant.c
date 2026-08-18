@@ -50,7 +50,7 @@ static status_t init_common(int the_fd) {
 	 *     0x00200000  SetDisplayMode.c   (ppc-acc: STAGE / draw test)
 	 *     0x00000001  level 1
 	 * Raise to 0xffffffff temporarily when the full CRTC/DAC dumps are wanted. */
-	si->settings.logmask = 0x00280001;
+	si->settings.logmask = 0x20280005;	/* nv_acc.c + SetDisplayMode.c + Cursor.c, levels 1 and 4 */
 	/* ppc: 2D acceleration is ENABLED. The old comment here claimed "the 2D
 	 * engine is not initialized on ppc" - it is now, and it demonstrably works:
 	 * a rectangle filled by the engine and a second one blitted from it were
@@ -67,7 +67,7 @@ static status_t init_common(int the_fd) {
 	 * (engine init, the big-endian FifoFree fix, AcceleratedBlit in app_server)
 	 * is in place; set this to false to turn it back on once the pixel format
 	 * question is solved. See the 2D notes for what has been ruled out. */
-	si->settings.block_acc = true;
+	si->settings.block_acc = false;
 	/* PIO, not DMA: CHKA in GetAccelerantHook.c exports the _DMA hook variants
 	 * when dma_acc is set (it defaults true), but we initialise the PIO engine
 	 * via nv_acc_init(). Mismatched, the DMA blit silently does nothing. */

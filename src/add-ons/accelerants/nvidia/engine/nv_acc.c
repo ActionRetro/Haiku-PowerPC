@@ -1,4 +1,17 @@
 /* NV Acceleration functions */
+
+/* ppc: ENDIAN_MODE for graphics objects (NV10..NV30 PRAMIN context word 0, b19).
+ * 0 = little endian, 1 = big endian; it makes the object byte-swap its memory
+ * accesses. Without it the engine reads our big-endian A,R,G,B framebuffer as
+ * little endian, decides the byte at +3 (our BLUE) is X8R8G8B8 padding, and
+ * writes zero into it - every accelerated blit stripped blue. Same bit nouveau
+ * sets under __BIG_ENDIAN. b19 means something else on NV40+, so this is only
+ * OR'ed into the < NV40A object set. */
+#ifdef __POWERPC__
+#	define NV_OBJ_ENDIAN 0x00080000
+#else
+#	define NV_OBJ_ENDIAN 0x00000000
+#endif
 /* Author:
    Rudolf Cornelissen 8/2003-5/2009.
 
@@ -341,15 +354,15 @@ status_t nv_acc_init()
 									  * It's adress needs to be at a 4kb boundary! */
 		ACCW(PR_CTX3_R, 0x00000002); /* unknown (looks like this is rubbish/not needed?) */
 		/* setup set '0' for cmd NV_ROP5_SOLID */
-		ACCW(PR_CTX0_0, 0x01008043); /* NVclass $043, patchcfg ROP_AND, nv10+: little endian */
+		ACCW(PR_CTX0_0, (0x01008043 | NV_OBJ_ENDIAN)); /* NVclass $043, patchcfg ROP_AND, nv10+: little endian */
 		ACCW(PR_CTX2_0, 0x00000000); /* DMA0 and DMA1 instance invalid */
 		ACCW(PR_CTX3_0, 0x00000000); /* method traps disabled */
 		/* setup set '1' for cmd NV_IMAGE_BLACK_RECTANGLE */
-		ACCW(PR_CTX0_1, 0x01008019); /* NVclass $019, patchcfg ROP_AND, nv10+: little endian */
+		ACCW(PR_CTX0_1, (0x01008019 | NV_OBJ_ENDIAN)); /* NVclass $019, patchcfg ROP_AND, nv10+: little endian */
 		ACCW(PR_CTX2_1, 0x00000000); /* DMA0 and DMA1 instance invalid */
 		ACCW(PR_CTX3_1, 0x00000000); /* method traps disabled */
 		/* setup set '2' for cmd NV_IMAGE_PATTERN */
-		ACCW(PR_CTX0_2, 0x01008018); /* NVclass $018, patchcfg ROP_AND, nv10+: little endian */
+		ACCW(PR_CTX0_2, (0x01008018 | NV_OBJ_ENDIAN)); /* NVclass $018, patchcfg ROP_AND, nv10+: little endian */
 		ACCW(PR_CTX2_2, 0x00000000); /* DMA0 and DMA1 instance invalid */
 		ACCW(PR_CTX3_2, 0x00000000); /* method traps disabled */
 //fixme: update 3D add-on and this code for the NV4_SURFACE command.
@@ -357,22 +370,22 @@ status_t nv_acc_init()
 		if(si->ps.card_arch >= NV10A)
 		{
 			/* ... cmd NV10_CONTEXT_SURFACES_2D */
-			ACCW(PR_CTX0_3, 0x01008062); /* NVclass $062, nv10+: little endian */
+			ACCW(PR_CTX0_3, (0x01008062 | NV_OBJ_ENDIAN)); /* NVclass $062, nv10+: little endian */
 		}
 		else
 		{
 			/* ... cmd NV4_SURFACE */
-			ACCW(PR_CTX0_3, 0x01008042); /* NVclass $042, nv10+: little endian */
+			ACCW(PR_CTX0_3, (0x01008042 | NV_OBJ_ENDIAN)); /* NVclass $042, nv10+: little endian */
 		}
 		ACCW(PR_CTX1_3, 0x00000000); /* colorspace not set, notify instance invalid (b16-31) */
 		ACCW(PR_CTX2_3, 0x11401140); /* DMA0 instance is $1140, DMA1 instance invalid */
 		ACCW(PR_CTX3_3, 0x00000000); /* method trap 0 is $1140, trap 1 disabled */
 		/* setup set '4' for cmd NV_IMAGE_BLIT */
-		ACCW(PR_CTX0_4, 0x0100805f); /* NVclass $05f, patchcfg ROP_AND, nv10+: little endian */
+		ACCW(PR_CTX0_4, (0x0100805f | NV_OBJ_ENDIAN)); /* NVclass $05f, patchcfg ROP_AND, nv10+: little endian */
 		ACCW(PR_CTX2_4, 0x00000000); /* DMA0 and DMA1 instance invalid */
 		ACCW(PR_CTX3_4, 0x00000000); /* method traps disabled */
 		/* setup set '5' for cmd NV4_GDI_RECTANGLE_TEXT */
-		ACCW(PR_CTX0_5, 0x0100804a); /* NVclass $04a, patchcfg ROP_AND, nv10+: little endian */
+		ACCW(PR_CTX0_5, (0x0100804a | NV_OBJ_ENDIAN)); /* NVclass $04a, patchcfg ROP_AND, nv10+: little endian */
 		ACCW(PR_CTX2_5, 0x00000000); /* DMA0 and DMA1 instance invalid */
 		ACCW(PR_CTX3_5, 0x00000000); /* method traps disabled */
 		/* setup set '6' ... */
@@ -755,8 +768,9 @@ status_t nv_acc_init()
 		 * the 32bpp branch was always being taken and the engine was always
 		 * configured. Kept because handling both costs nothing and the default
 		 * case silently left the engine unprogrammed. */
-		LOG(1, ("ppc-acc: pixel format: space $%08x -> 32bpp branch\n",
-			(uint32)si->dm.space));
+		LOG(1, ("ppc-acc: pixel format: space $%08x -> 32bpp branch, "
+			"obj endian bit $%08x, arch %d\n",
+			(uint32)si->dm.space, (uint32)NV_OBJ_ENDIAN, (int)si->ps.card_arch));
 		/* acc engine */
 		ACCW(FORMATS, 0x000070e5);
 		if (si->ps.card_arch < NV30A)

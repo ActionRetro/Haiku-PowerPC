@@ -855,7 +855,18 @@ status_t nv_crtc_cursor_init()
 		fb[i]=0;
 	}
 
-	/* select 32x32 pixel, 16bit color cursorbitmap, no doublescan */
+	/* select 32x32 pixel, 16bit color cursorbitmap, no doublescan.
+	 *
+	 * ppc: this chip has no reachable alpha-blended cursor. Measured -
+	 *     wrote $ffffffff -> reads $1ff11111   implemented: b0,b4,b8,b12,b16,b20-28
+	 *     wrote $04011200 -> reads $04011000   b9 does not exist
+	 * - and every combination of the implemented bits with a 32bpp cursor
+	 * bitmap was tried at runtime (25 values: b4/b12/b16 in both b8 polarities,
+	 * 32x32 and 64x64 geometry, and the whole b20-23 nibble). All missed. So
+	 * the hardware cursor stays 16-bit with one bit of alpha, which is why it
+	 * has hard edges. If this is ever revisited, the next lever is the DAC
+	 * (NV10_CURSYNC below), not this register. See nv_ppc_curconf_tunable.py
+	 * for the runtime-tuning harness used to sweep it. */
 	NV_REG32(NV32_CURCONF) = 0x02000100;
 
 	/* activate hardware-sync between cursor updates and vertical retrace where
@@ -916,6 +927,83 @@ status_t nv_crtc_cursor_hide()
 #else
 #	define NV_CURSOR_PIX(p_) (p_)
 #endif
+
+/* set up cursor shape from an ARGB bitmap (Haiku's own cursors).
+ * The hardware bitmap is the same 32x32 A1R5G5B5 buffer nv_crtc_cursor_define()
+ * fills for the BeOS monochrome cursors - b15 is 'opaque', the low 15 bits are
+ * the colour - so this is just a second way of filling it. nv_crtc2's version
+ * writes the identical buffer at si->framebuffer, so one function serves both
+ * heads. */
+status_t nv_crtc_cursor_define_bitmap(uint16 width, uint16 height,
+	const uint8* bitmap, uint16 bytesPerRow)
+{
+	int x, y;
+	vuint16 *cursor;
+
+	if (bitmap == NULL || width == 0 || height == 0
+		|| width > 32 || height > 32)
+		return B_ERROR;
+
+	/* get a pointer to the cursor */
+	cursor = (vuint16*) si->framebuffer;
+
+	for (y = 0; y < 32; y++)
+	{
+		const uint8* src = bitmap + (y * bytesPerRow);
+		for (x = 0; x < 32; x++)
+		{
+			/* preset transparant: the hardware buffer is always 32x32, so
+			 * anything outside the supplied bitmap has to be cleared */
+			uint16 pixel = 0x0000;
+
+			if ((x < width) && (y < height))
+			{
+				/* app_server hands out 32-bit bitmap data in a FIXED
+				 * little-endian B,G,R,A byte order - on big-endian machines
+				 * too - so index the bytes rather than reading a uint32. */
+				uint8 b = src[(x * 4) + 0];
+				uint8 g = src[(x * 4) + 1];
+				uint8 r = src[(x * 4) + 2];
+				uint8 a = src[(x * 4) + 3];
+
+				/* The hardware cursor has a single bit of alpha, so an
+				 * anti-aliased edge pixel has to pick a side. */
+				if (a >= 128)
+				{
+					/* ...and having picked "opaque", it needs its real
+					 * colour back. app_server's cursor bitmaps are
+					 * PRE-multiplied (see the blend loop in
+					 * HWInterface::_DrawCursor, "assuming pre-multiplied
+					 * cursor bitmap"), so a 60%-opaque white pixel arrives
+					 * as mid-grey. Promoting that to fully opaque without
+					 * un-multiplying draws a grey fringe right around the
+					 * cursor - which looks a great deal rougher than a
+					 * clean hard edge does. */
+					if (a < 255)
+					{
+						uint32 rr = ((uint32)r * 255 + (a >> 1)) / a;
+						uint32 gg = ((uint32)g * 255 + (a >> 1)) / a;
+						uint32 bb = ((uint32)b * 255 + (a >> 1)) / a;
+						/* pre-multiplied data cannot exceed alpha, but
+						 * rounding can, so clamp */
+						r = (uint8)(rr > 255 ? 255 : rr);
+						g = (uint8)(gg > 255 ? 255 : gg);
+						b = (uint8)(bb > 255 ? 255 : bb);
+					}
+
+					pixel = 0x8000
+						| ((uint16)(r >> 3) << 10)
+						| ((uint16)(g >> 3) << 5)
+						|  (uint16)(b >> 3);
+				}
+			}
+
+			cursor[x + (y * 32)] = NV_CURSOR_PIX(pixel);
+		}
+	}
+
+	return B_OK;
+}
 
 /*set up cursor shape*/
 status_t nv_crtc_cursor_define(uint8* andMask,uint8* xorMask)

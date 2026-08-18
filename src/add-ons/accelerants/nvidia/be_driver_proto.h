@@ -39,6 +39,7 @@ uint32 DPMS_MODE(void);
 status_t SET_DPMS_MODE(uint32 dpms_flags);
 
 status_t SET_CURSOR_SHAPE(uint16 width, uint16 height, uint16 hot_x, uint16 hot_y, uint8 *andMask, uint8 *xorMask);
+status_t SET_CURSOR_BITMAP(uint16 width, uint16 height, uint16 hot_x, uint16 hot_y, color_space colorSpace, uint16 bytesPerRow, const uint8 *bitmapData);
 void MOVE_CURSOR(uint16 x, uint16 y);
 void SHOW_CURSOR(bool is_visible);
 

@@ -79,6 +79,7 @@ void *	get_accelerant_hook(uint32 feature, void *data)
 
 		/* cursor managment */
 		HRDC(SET_CURSOR_SHAPE);
+		HRDC(SET_CURSOR_BITMAP);
 		HRDC(MOVE_CURSOR);
 		HRDC(SHOW_CURSOR);
 

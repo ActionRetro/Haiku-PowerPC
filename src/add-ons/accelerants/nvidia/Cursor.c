@@ -40,6 +40,62 @@ status_t SET_CURSOR_SHAPE(uint16 width, uint16 height, uint16 hot_x, uint16 hot_
 	return B_OK;
 }
 
+/* Set the cursor from an ARGB bitmap. This is the hook Haiku actually wants:
+ * its cursors are anti-aliased ARGB, so ServerCursor::CursorData() is NULL and
+ * SET_CURSOR_SHAPE above is never even reached for them. Without this hook
+ * app_server silently falls back to a SOFTWARE cursor, which it composites
+ * straight into the front buffer - invisible in normal use, but it means VRAM
+ * holds pixels the back buffer does not, which an accelerated screen-to-screen
+ * blit then drags around the display. */
+status_t SET_CURSOR_BITMAP(uint16 width, uint16 height, uint16 hot_x, uint16 hot_y,
+	color_space colorSpace, uint16 bytesPerRow, const uint8 *bitmapData)
+{
+	LOG(4,("SET_CURSOR_BITMAP: width %d, height %d, hot_x %d, hot_y %d, "
+		"space $%08x, bytesPerRow %d\n",
+		width, height, hot_x, hot_y, (uint32)colorSpace, bytesPerRow));
+
+	/* the hardware cursor bitmap is 32x32: bigger cursors are not ours to
+	 * draw, and returning an error makes app_server fall back to software
+	 * for that cursor rather than showing a cropped one */
+	if ((width == 0) || (height == 0) || (width > 32) || (height > 32))
+	{
+		LOG(4,("SET_CURSOR_BITMAP: %dx%d does not fit the 32x32 hardware "
+			"cursor, declining\n", width, height));
+		return B_ERROR;
+	}
+
+	if ((hot_x >= width) || (hot_y >= height))
+		return B_ERROR;
+
+	/* 32 bits per pixel only. B_RGBA32 resolves to the _LITTLE variant on this
+	 * port (measured), but accept both so a host-order change cannot silently
+	 * drop us back to the software cursor. */
+	switch (colorSpace)
+	{
+	case B_RGBA32_LITTLE:
+	case B_RGB32_LITTLE:
+	case B_RGBA32_BIG:
+	case B_RGB32_BIG:
+		break;
+	default:
+		LOG(4,("SET_CURSOR_BITMAP: colorspace $%08x not supported, declining\n",
+			(uint32)colorSpace));
+		return B_ERROR;
+	}
+
+	if (nv_crtc_cursor_define_bitmap(width, height, bitmapData, bytesPerRow)
+		!= B_OK)
+		return B_ERROR;
+
+	/* Update cursor variables appropriately. */
+	si->cursor.width = width;
+	si->cursor.height = height;
+	si->cursor.hot_x = hot_x;
+	si->cursor.hot_y = hot_y;
+
+	return B_OK;
+}
+
 /* Move the cursor to the specified position on the desktop, taking account of virtual/dual issues */
 void MOVE_CURSOR(uint16 x, uint16 y) 
 {
