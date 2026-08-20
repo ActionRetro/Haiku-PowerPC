@@ -439,6 +439,18 @@ ppc_get_cardbus_mem_base()
 	return sCardBusMemBase;
 }
 
+static ppc_audio_info sAudioInfo;
+static char* sAudioDump;
+static uint32 sAudioDumpLength;
+
+
+extern "C" const ppc_audio_info*
+ppc_get_audio_info()
+{
+	return &sAudioInfo;
+}
+
+
 extern "C" uint32
 ppc_get_kauai_ata_irq()
 {
@@ -478,6 +490,9 @@ arch_platform_init(struct kernel_args *kernelArgs)
 	sCardBusIRQ = kernelArgs->arch_args.cardbus_irq;
 	sCardBusMemBase = kernelArgs->arch_args.cardbus_mem_base;
 	sKauaiAtaIRQ = kernelArgs->arch_args.kauai_ata_irq;
+	sAudioInfo = kernelArgs->arch_args.audio;
+	sAudioDump = kernelArgs->arch_args.of_audio_dump;
+	sAudioDumpLength = kernelArgs->arch_args.of_audio_dump_len;
 	sAirportIRQ = kernelArgs->arch_args.airport_irq;
 	sGmacMACValid = kernelArgs->arch_args.gmac_mac_valid != 0;
 	for (int i = 0; i < 6; i++)
@@ -517,5 +532,61 @@ arch_platform_init_post_vm(struct kernel_args *kernelArgs)
 status_t
 arch_platform_init_post_thread(struct kernel_args *kernelArgs)
 {
+	// Report what the loader found in the Open Firmware audio subtree. This is
+	// the only view the kernel gets of it - OF is long gone by now.
+	//
+	// ★ It has to be printed from HERE, not from arch_platform_init_post_vm:
+	// that runs four lines before debug_init_post_settings(), so anything it
+	// prints goes to the screen no matter what serial_debug_output says, and
+	// several kilobytes rendered through Open Firmware's text console is slow
+	// enough to notice on a real machine. By this point the setting has been
+	// read, so a quiet image stays quiet and the syslog still gets it all.
+	if (sAudioDumpLength > 0 && sAudioDump != NULL) {
+		// ★ One line per dprintf. The whole dump in a single call silently
+		// loses everything past the kernel's format buffer - which is a good
+		// deal smaller than this - and a truncated device tree looks exactly
+		// like a device tree that ends there.
+		dprintf("audio device tree (%" B_PRIu32 " bytes):\n", sAudioDumpLength);
+		char line[256];
+		uint32 used = 0;
+		for (uint32 i = 0; i < sAudioDumpLength; i++) {
+			char c = sAudioDump[i];
+			if (c == '\n' || used == sizeof(line) - 1) {
+				line[used] = '\0';
+				dprintf("dt: %s\n", line);
+				// ★ The syslog dropped half of the last dump - it arrived
+				// faster than the daemon could drain the ring. Pace it.
+				spin(3000);
+				used = 0;
+				if (c != '\n')
+					line[used++] = c;
+			} else
+				line[used++] = c;
+		}
+		if (used > 0) {
+			line[used] = '\0';
+			dprintf("dt: %s\n", line);
+		}
+	}
+	if (sAudioInfo.valid != 0) {
+		dprintf("audio: mac-io %#" B_PRIx32 " i2s +%#" B_PRIx32 "/%#" B_PRIx32
+			" tx dma +%#" B_PRIx32 " irq %" B_PRIu32
+			" rx dma +%#" B_PRIx32 " irq %" B_PRIu32 "\n",
+			sAudioInfo.macio_phys, sAudioInfo.i2s_offset, sAudioInfo.i2s_size,
+			sAudioInfo.tx_dbdma_offset, sAudioInfo.tx_irq,
+			sAudioInfo.rx_dbdma_offset, sAudioInfo.rx_irq);
+		dprintf("audio: codec \"%s\" at i2c +%#" B_PRIx32 " address %#"
+			B_PRIx32 ", layout %" B_PRIu32 ", device %" B_PRIu32 "\n",
+			sAudioInfo.codec, sAudioInfo.i2c_offset, sAudioInfo.codec_i2c_addr,
+			sAudioInfo.layout_id, sAudioInfo.device_id);
+		for (uint32 i = 0; i < sAudioInfo.gpio_count; i++) {
+			dprintf("audio: gpio \"%s\" +%#" B_PRIx32 " active %" B_PRIu32
+				" irq %" B_PRIu32 "\n", sAudioInfo.gpios[i].name,
+				sAudioInfo.gpios[i].offset, sAudioInfo.gpios[i].active_state,
+				sAudioInfo.gpios[i].irq);
+		}
+	} else
+		dprintf("audio: no mac-io audio cell in the device tree\n");
+
 	return B_OK;
 }

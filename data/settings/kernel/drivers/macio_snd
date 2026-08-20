@@ -1,0 +1,36 @@
+## mac-io sound driver (macio_snd)
+##
+## Comment a line out and reboot to change what the driver does - no reflash.
+## If the boot tone is silent, the syslog line to read first is:
+##
+##   grep -a "frame count" /boot/system/var/log/syslog
+##
+## The i2s cell counts frames as it shifts them out. About 4410 frames per
+## 100 ms means the digital side is running at 44.1 kHz and the silence is in
+## the codec or after it. A counter that does not move means nothing is being
+## shifted out at all, and the codec is beside the point.
+
+trace true
+codec true
+#selftest true
+i2s true
+
+## codec_gain: the codec gain, on Linux's TAS3004 gain-table scale
+##     hwvalue = 1048576.0 * exp(0.057564628 * dB * 2)
+## so 0x100000 is 0 dB and the table ends at +18 dB = 0x7f0000. The MIXER
+## registers take this value as it stands; the VOLUME register takes it shifted
+## down by four, which the driver does. Some landmarks:
+##     0x019999   -20 dB      0x100000     0 dB
+##     0x050f44   -10 dB      0x3298b0   +10 dB
+##     0x0b03a0    -5 dB      0x7f0000   +18 dB (the top of the table)
+codec_gain 0x100000
+
+## codec_allpass: bypass the codec's biquad filters. They sit in the signal
+## path and should come out of a hardware reset passing everything through -
+## but if they do not, they pass nothing at all.
+#codec_allpass true
+
+## mute_invert: drive the amplifier and headphone mute lines the other way. A
+## mute line driven backwards is indistinguishable from everything else being
+## right and the machine still silent.
+#mute_invert true

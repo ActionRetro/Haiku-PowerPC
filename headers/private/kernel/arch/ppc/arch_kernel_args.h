@@ -9,6 +9,8 @@
 #	error This file is included from <boot/kernel_args.h> only
 #endif
 
+#include <arch_audio_info.h>
+
 #define _PACKED __attribute__((packed))
 
 #define MAX_VIRTUAL_RANGES_TO_KEEP	32
@@ -76,6 +78,15 @@ typedef struct {
 	// "kauai-ata", a separate PCI function, not a mac-io cell), resolved from
 	// the OF interrupt-map by the loader. 0 = none/unknown.
 	uint32		kauai_ata_irq;
+	// Sound hardware, read from the Open Firmware device tree by the loader
+	// (OF is not callable from the kernel and these offsets are machine
+	// specific). See arch_audio_info.h.
+	ppc_audio_info	audio;
+
+	// Text dump of the mac-io audio subtree, printed to the syslog by the
+	// kernel. A discovery aid - nothing parses it.
+	char		of_audio_dump[12288];
+	uint32		of_audio_dump_len;
 } arch_kernel_args;
 
 #endif	/* KERNEL_ARCH_PPC_KERNEL_ARGS_H */

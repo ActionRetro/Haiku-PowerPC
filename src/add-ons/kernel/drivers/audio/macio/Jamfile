@@ -2,6 +2,11 @@ SubDir HAIKU_TOP src add-ons kernel drivers audio macio ;
 
 UsePrivateHeaders audio ;
 
+# The sound hardware description comes from the boot loader through
+# kernel_args (arch_audio_info.h), which lives with the ppc kernel headers.
+UsePrivateKernelHeaders ;
+UseArchHeaders $(TARGET_ARCH) ;
+
 KernelAddon macio_snd :
 	macio_snd.cpp
 	;

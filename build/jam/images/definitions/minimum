@@ -59,6 +59,7 @@ SYSTEM_BIN = [ FFilterByBuildFeatures
 	login
 	lsindex
 	makebootable
+	media_client
 	message
 	mimeset
 	mkfs
@@ -345,7 +346,11 @@ SYSTEM_ADD_ONS_MEDIA =
 	mixer.media_addon
 	;
 
-SYSTEM_ADD_ONS_MEDIA_PLUGINS =  ;
+# Enough of the media plugin set to open a real audio file. WAV needs
+# ffmpeg, which this port does not build, but AU is a plain header over
+# PCM and au_reader + raw_decoder handle it - so `media_client play x.au`
+# works, and with it the whole stack above the sound driver.
+SYSTEM_ADD_ONS_MEDIA_PLUGINS = au_reader raw_decoder ;
 
 SYSTEM_ADD_ONS_PRINT = ;
 
@@ -353,7 +358,12 @@ SYSTEM_ADD_ONS_PRINT_TRANSPORT = ;
 
 SYSTEM_ADD_ONS_SCREENSAVERS = ;
 
-SYSTEM_ADD_ONS_DRIVERS_AUDIO = null_audio ;
+# macio_snd drives the mac-io sound cells (davbus/Burgundy on the older
+# machines, i2s/TAS3004 on the G4 portables). It publishes nothing when the
+# boot loader found no audio cell in the device tree, so it is safe to ship
+# unconditionally; null_audio is dropped because a dummy device that wins the
+# default-output race is worse than no device at all.
+SYSTEM_ADD_ONS_DRIVERS_AUDIO = macio_snd ;
 
 SYSTEM_ADD_ONS_DRIVERS_AUDIO_OLD = ;
 
@@ -489,7 +499,7 @@ profileFiles = $(profileFiles:G=profile-d) ;
 AddDirectoryToHaikuImage system settings etc profile.d ;
 AddFilesToHaikuImage system settings etc profile.d : $(profileFiles) ;
 
-local driverSettingsFiles = <driver-settings>kernel ;
+local driverSettingsFiles = <driver-settings>kernel <driver-settings>macio_snd ;
 SEARCH on $(driverSettingsFiles)
 	= [ FDirName $(HAIKU_TOP) data settings kernel drivers ] ;
 AddFilesToHaikuImage home config settings kernel drivers

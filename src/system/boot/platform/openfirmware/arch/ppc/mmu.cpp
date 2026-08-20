@@ -11,6 +11,7 @@
 
 #include <OS.h>
 
+#include <stdarg.h>
 #include <string.h>
 
 #include <platform_arch.h>
@@ -972,6 +973,601 @@ arch_set_callback(void)
 }
 
 
+// ---------------------------------------------------------------------------
+//	Audio (mac-io i2s / DBDMA / i2c / GPIO) device-tree probe
+//
+//	Sound on these Macs is spread over four mac-io cells whose addresses are
+//	machine specific and exist only in the Open Firmware device tree: the i2s
+//	serial bus, its two DBDMA channels (play and record), a Keywest i2c bus
+//	carrying the codec, and a handful of GPIOs that mute the amplifier and
+//	report the headphone jack. The kernel cannot call OF, so the loader reads
+//	all of it here - as a structured description the sound driver consumes, and
+//	as a text dump the kernel prints into the syslog. The subtree is entirely
+//	new territory, and one boot that shows all of it is worth more than five
+//	that each answer a single question.
+// ---------------------------------------------------------------------------
+
+static char* sAudioDump;
+static size_t sAudioDumpSize;
+static size_t sAudioDumpUsed;
+
+// Nodes referenced by a "platform-do-*" property. Apple moved operations that
+// used to be plain register writes into device-tree bytecode, and the property
+// on the client node names the provider by phandle; the bytecode that actually
+// does the work lives over there.
+#define AUDIO_MAX_PLATFORM_TARGETS	6
+static uint32 sPlatformTargets[AUDIO_MAX_PLATFORM_TARGETS];
+static uint32 sPlatformTargetCount;
+
+
+static void
+audio_note_platform_target(uint32 phandle)
+{
+	if (phandle == 0 || phandle == 0xffffffff)
+		return;
+	for (uint32 i = 0; i < sPlatformTargetCount; i++) {
+		if (sPlatformTargets[i] == phandle)
+			return;
+	}
+	if (sPlatformTargetCount < AUDIO_MAX_PLATFORM_TARGETS)
+		sPlatformTargets[sPlatformTargetCount++] = phandle;
+}
+
+
+static void
+audio_dump(const char* format, ...)
+{
+	if (sAudioDump == NULL || sAudioDumpUsed + 1 >= sAudioDumpSize)
+		return;
+
+	va_list args;
+	va_start(args, format);
+	int length = vsnprintf(sAudioDump + sAudioDumpUsed,
+		sAudioDumpSize - sAudioDumpUsed, format, args);
+	va_end(args);
+
+	if (length > 0) {
+		sAudioDumpUsed += (size_t)length;
+		if (sAudioDumpUsed >= sAudioDumpSize)
+			sAudioDumpUsed = sAudioDumpSize - 1;
+	}
+}
+
+
+//! Read a string property. Always leaves \a buffer NUL terminated; a property
+//	that is a NUL-separated list (like "compatible") yields its first entry.
+static void
+audio_string_prop(intptr_t node, const char* property, char* buffer,
+	size_t size)
+{
+	buffer[0] = '\0';
+	intptr_t length = of_getprop(node, property, buffer, (intptr_t)size - 1);
+	if (length <= 0) {
+		buffer[0] = '\0';
+		return;
+	}
+	if ((size_t)length > size - 1)
+		length = (intptr_t)size - 1;
+	buffer[length] = '\0';
+}
+
+
+//! Read up to \a maxCells cells of a word-array property. Returns the number
+//	of cells actually read (0 if the property is absent).
+static uint32
+audio_cell_prop(intptr_t node, const char* property, uint32* cells,
+	uint32 maxCells)
+{
+	for (uint32 i = 0; i < maxCells; i++)
+		cells[i] = 0;
+	intptr_t length = of_getprop(node, property, cells,
+		(intptr_t)(maxCells * sizeof(uint32)));
+	if (length <= 0)
+		return 0;
+	uint32 count = (uint32)length / 4;
+	return count > maxCells ? maxCells : count;
+}
+
+
+static void
+audio_dump_cell_prop(intptr_t node, const char* property, const char* label)
+{
+	uint32 cells[12];
+	uint32 count = audio_cell_prop(node, property, cells, 12);
+	if (count == 0)
+		return;
+	audio_dump(" %s=", label);
+	for (uint32 i = 0; i < count; i++)
+		audio_dump("%s%x", i > 0 ? "," : "", (unsigned)cells[i]);
+}
+
+
+//! One line describing a node: name, compatible, type, reg, interrupts, plus
+//	the few properties that identify audio hardware.
+static void
+audio_dump_node(intptr_t node, int depth)
+{
+	static const char kIndent[] = "      ";
+	int indent = depth * 2;
+	if (indent > 6)
+		indent = 6;
+
+	char name[40];
+	char compatible[56];
+	char type[32];
+	audio_string_prop(node, "name", name, sizeof(name));
+	audio_string_prop(node, "compatible", compatible, sizeof(compatible));
+	audio_string_prop(node, "device_type", type, sizeof(type));
+
+	audio_dump("%s%s", kIndent + (6 - indent), name);
+	if (compatible[0] != '\0')
+		audio_dump(" c=%s", compatible);
+	if (type[0] != '\0')
+		audio_dump(" t=%s", type);
+	audio_dump_cell_prop(node, "reg", "reg");
+	audio_dump_cell_prop(node, "interrupts", "int");
+	audio_dump_cell_prop(node, "AAPL,interrupts", "aint");
+	audio_dump_cell_prop(node, "layout-id", "layout");
+	audio_dump_cell_prop(node, "device-id", "devid");
+	audio_dump_cell_prop(node, "#address-cells", "#ac");
+	audio_dump_cell_prop(node, "audio-gpio-active-state", "act");
+
+	char gpio[32];
+	audio_string_prop(node, "audio-gpio", gpio, sizeof(gpio));
+	if (gpio[0] != '\0')
+		audio_dump(" gpio=%s", gpio);
+
+	audio_dump("\n");
+}
+
+
+//! Every property of a node, by name, with its length and first cells. Used on
+//	the handful of nodes the driver has to understand exactly, so that a
+//	property nobody thought to ask for still shows up.
+static void
+audio_dump_all_props(intptr_t node, int depth)
+{
+	static const char kIndent[] = "        ";
+	int indent = depth * 2;
+	if (indent > 8)
+		indent = 8;
+
+	char property[64];
+	char previous[64];
+	previous[0] = '\0';
+
+	for (int i = 0; i < 40; i++) {
+		property[0] = '\0';
+		intptr_t result = of_nextprop(node,
+			previous[0] == '\0' ? NULL : previous, property);
+		if (result != 1 || property[0] == '\0')
+			break;
+
+		intptr_t length = of_getproplen(node, property);
+		audio_dump("%s.%s[%d]", kIndent + (8 - indent), property, (int)length);
+
+		// A platform function is the whole point of looking here, so print all
+		// of it rather than the first few words, and remember who it acts on.
+		if (strncmp(property, "platform-", 9) == 0 && length >= 8) {
+			uint32 cells[16];
+			uint32 count = audio_cell_prop(node, property, cells, 16);
+			for (uint32 c = 0; c < count; c++)
+				audio_dump(" %x", (unsigned)cells[c]);
+			if (strncmp(property, "platform-do-", 12) == 0 && count > 0)
+				audio_note_platform_target(cells[0]);
+			audio_dump("\n");
+			strlcpy(previous, property, sizeof(previous));
+			continue;
+		}
+
+		if (length > 0 && length <= 8) {
+			// short: could be either cells or a string, so show both
+			uint32 cells[2];
+			uint32 count = audio_cell_prop(node, property, cells, 2);
+			for (uint32 c = 0; c < count; c++)
+				audio_dump(" %x", (unsigned)cells[c]);
+			char text[16];
+			audio_string_prop(node, property, text, sizeof(text));
+			bool printable = text[0] >= 0x20 && text[0] < 0x7f;
+			if (printable)
+				audio_dump(" \"%s\"", text);
+		} else if (length > 8 && length <= 64) {
+			uint32 cells[4];
+			uint32 count = audio_cell_prop(node, property, cells, 4);
+			for (uint32 c = 0; c < count; c++)
+				audio_dump(" %x", (unsigned)cells[c]);
+			char text[24];
+			audio_string_prop(node, property, text, sizeof(text));
+			if (text[0] >= 0x20 && text[0] < 0x7f)
+				audio_dump(" \"%s\"", text);
+		}
+		audio_dump("\n");
+
+		strlcpy(previous, property, sizeof(previous));
+	}
+}
+
+
+//! strstr, which the boot loader's cut-down libroot does not provide.
+static bool
+audio_contains(const char* haystack, const char* needle)
+{
+	size_t length = strlen(needle);
+	for (const char* p = haystack; *p != '\0'; p++) {
+		if (strncmp(p, needle, length) == 0)
+			return true;
+	}
+	return false;
+}
+
+
+static bool
+audio_name_is(const char* name, const char* wanted)
+{
+	// mac-io cells appear both bare ("i2s") and unit-addressed ("i2s@10000");
+	// OF's "name" property is the bare form, but be tolerant either way.
+	size_t length = strlen(wanted);
+	if (strncmp(name, wanted, length) != 0)
+		return false;
+	return name[length] == '\0' || name[length] == '@';
+}
+
+
+//! True for the nodes whose every property is worth printing.
+static bool
+audio_is_interesting(const char* name, const char* compatible)
+{
+	// The i2c cell earns a full property dump because driving it needs
+	// "AAPL,address-step" - how far apart its registers are - which is not
+	// derivable from anything else.
+	return audio_name_is(name, "i2c") || audio_name_is(name, "i2c-bus")
+		|| audio_name_is(name, "sound") || audio_name_is(name, "i2s-a")
+		|| audio_name_is(name, "i2s-b") || audio_name_is(name, "davbus")
+		|| audio_name_is(name, "deq") || audio_name_is(name, "codec")
+		|| audio_contains(compatible, "tas")
+		|| audio_contains(compatible, "snapper")
+		|| audio_contains(compatible, "burgundy")
+		|| audio_contains(compatible, "screamer");
+}
+
+
+//! The codec sits on the Keywest i2c bus as "deq" (digital equaliser), and its
+//	"reg" is its address on that bus. Note the depth: on the i2s machines the
+//	i2c cell has an "i2c-bus" child and the codec hangs off THAT, so this has to
+//	be tried at both levels.
+static void
+audio_record_codec(intptr_t node, const char* name, const char* compatible,
+	uint32 channel)
+{
+	if (!audio_name_is(name, "deq") && !audio_contains(compatible, "tas")
+			&& !audio_contains(compatible, "codec"))
+		return;
+
+	uint32 reg[4];
+	if (audio_cell_prop(node, "reg", reg, 4) == 0)
+		return;
+
+	gKernelArgs.arch_args.audio.codec_i2c_addr = reg[0];
+	gKernelArgs.arch_args.audio.i2c_channel = channel;
+	strlcpy(gKernelArgs.arch_args.audio.codec,
+		compatible[0] != '\0' ? compatible : name,
+		sizeof(gKernelArgs.arch_args.audio.codec));
+}
+
+
+//! Record one audio GPIO (amp mute, headphone mute/detect, codec reset).
+static void
+audio_record_gpio(intptr_t node, const char* name, uint32 gpioBase)
+{
+	uint32 index = gKernelArgs.arch_args.audio.gpio_count;
+	if (index >= 8)
+		return;
+
+	uint32 cells[4];
+	uint32 count = audio_cell_prop(node, "reg", cells, 4);
+	if (count == 0)
+		return;
+
+	// A GPIO cell's "reg" is an offset relative to the parent gpio cell on
+	// some machines and absolute within mac-io on others; anything smaller
+	// than the gpio block's own offset is clearly the former.
+	uint32 offset = cells[0];
+	if (offset < gpioBase)
+		offset += gpioBase;
+
+	strlcpy(gKernelArgs.arch_args.audio.gpios[index].name, name,
+		sizeof(gKernelArgs.arch_args.audio.gpios[index].name));
+	gKernelArgs.arch_args.audio.gpios[index].offset = offset;
+
+	uint32 state[2];
+	gKernelArgs.arch_args.audio.gpios[index].active_state
+		= audio_cell_prop(node, "audio-gpio-active-state", state, 2) > 0
+			? state[0] : 0;
+
+	uint32 intr[4];
+	gKernelArgs.arch_args.audio.gpios[index].irq
+		= audio_cell_prop(node, "interrupts", intr, 4) > 0 ? intr[0] : 0;
+
+	gKernelArgs.arch_args.audio.gpio_count = index + 1;
+}
+
+
+//! The "sound" node names the audio wiring as a whole: its "layout-id" (later
+//	machines) or its "compatible" (earlier ones) is what tells a driver which
+//	codec and which speaker routing it is looking at.
+static void
+audio_record_sound_node(intptr_t node, const char* name)
+{
+	if (!audio_name_is(name, "sound"))
+		return;
+
+	uint32 id[2];
+	if (audio_cell_prop(node, "layout-id", id, 2) > 0)
+		gKernelArgs.arch_args.audio.layout_id = id[0];
+	if (audio_cell_prop(node, "device-id", id, 2) > 0)
+		gKernelArgs.arch_args.audio.device_id = id[0];
+
+	// On the pre-i2s machines there is no separate codec node on an i2c bus -
+	// the codec IS the sound node ("burgundy", "screamer"), so take its name
+	// from here unless an i2c codec has already claimed the field.
+	if (gKernelArgs.arch_args.audio.codec[0] == '\0') {
+		char compatible[32];
+		audio_string_prop(node, "compatible", compatible, sizeof(compatible));
+		if (compatible[0] != '\0') {
+			strlcpy(gKernelArgs.arch_args.audio.codec, compatible,
+				sizeof(gKernelArgs.arch_args.audio.codec));
+		}
+	}
+}
+
+
+//! Walk the mac-io audio cells: fill in arch_args.audio and build the dump.
+static void
+probe_audio_device_tree(void)
+{
+	sAudioDump = gKernelArgs.arch_args.of_audio_dump;
+	sAudioDumpSize = sizeof(gKernelArgs.arch_args.of_audio_dump);
+	sAudioDumpUsed = 0;
+	sAudioDump[0] = '\0';
+	memset(&gKernelArgs.arch_args.audio, 0,
+		sizeof(gKernelArgs.arch_args.audio));
+
+	intptr_t root = of_finddevice("/");
+	if (root == OF_FAILED)
+		return;
+
+	for (intptr_t bridge = of_child(root); bridge != 0 && bridge != OF_FAILED;
+			bridge = of_peer(bridge)) {
+		char bridgeType[32];
+		audio_string_prop(bridge, "device_type", bridgeType,
+			sizeof(bridgeType));
+		if (strcmp(bridgeType, "pci") != 0)
+			continue;
+
+		for (intptr_t macio = of_child(bridge);
+				macio != 0 && macio != OF_FAILED; macio = of_peer(macio)) {
+			char macioType[32];
+			audio_string_prop(macio, "device_type", macioType,
+				sizeof(macioType));
+			if (strcmp(macioType, "mac-io") != 0)
+				continue;
+
+			// mac-io's own register window: the 32-bit memory entry of
+			// "assigned-addresses" (phys.hi, phys.mid, phys.lo, size.hi,
+			// size.lo per entry; space code 0x02 = 32-bit memory).
+			uint32 assigned[20];
+			uint32 assignedCount = audio_cell_prop(macio,
+				"assigned-addresses", assigned, 20);
+			for (uint32 e = 0; e + 5 <= assignedCount; e += 5) {
+				if (((assigned[e] >> 24) & 0x03) == 0x02) {
+					gKernelArgs.arch_args.audio.macio_phys = assigned[e + 2];
+					break;
+				}
+			}
+
+			audio_dump_node(macio, 0);
+			audio_dump("  (macio phys %x)\n",
+				(unsigned)gKernelArgs.arch_args.audio.macio_phys);
+
+			uint32 gpioBase = 0;
+
+			for (intptr_t cell = of_child(macio);
+					cell != 0 && cell != OF_FAILED; cell = of_peer(cell)) {
+				char name[40];
+				char compatible[56];
+				audio_string_prop(cell, "name", name, sizeof(name));
+				audio_string_prop(cell, "compatible", compatible,
+					sizeof(compatible));
+
+				audio_dump_node(cell, 1);
+
+				bool isI2S = audio_name_is(name, "i2s");
+				bool isI2C = audio_name_is(name, "i2c")
+					|| audio_name_is(name, "i2c-bus");
+				bool isGPIO = audio_name_is(name, "gpio");
+				bool isDavbus = audio_name_is(name, "davbus")
+					|| audio_name_is(name, "sound");
+
+				if (!isI2S && !isI2C && !isGPIO && !isDavbus)
+					continue;
+
+				uint32 cellReg[8];
+				uint32 cellRegCount = audio_cell_prop(cell, "reg", cellReg, 8);
+
+				if (isI2C && cellRegCount > 0) {
+					gKernelArgs.arch_args.audio.i2c_offset = cellReg[0];
+					// How far apart the cell's registers are. Absent means
+					// the usual 16 bytes.
+					uint32 step[2];
+					gKernelArgs.arch_args.audio.i2c_address_step
+						= audio_cell_prop(cell, "AAPL,address-step", step, 2)
+							> 0 ? step[0] : 0x10;
+				}
+				if (isGPIO && cellRegCount > 0)
+					gpioBase = cellReg[0];
+
+				// The davbus/sound form (Burgundy, Screamer): the cell itself
+				// carries the three register blocks.
+				if (isDavbus && cellRegCount >= 6) {
+					gKernelArgs.arch_args.audio.i2s_offset = cellReg[0];
+					gKernelArgs.arch_args.audio.i2s_size = cellReg[1];
+					gKernelArgs.arch_args.audio.tx_dbdma_offset = cellReg[2];
+					gKernelArgs.arch_args.audio.rx_dbdma_offset = cellReg[4];
+					gKernelArgs.arch_args.audio.valid = 1;
+					uint32 intr[8];
+					uint32 intrCount = audio_cell_prop(cell, "interrupts",
+						intr, 8);
+					// Cells come in (input, sense) pairs on these machines.
+					uint32 stride = intrCount >= 6 ? 2 : 1;
+					if (intrCount >= 1)
+						gKernelArgs.arch_args.audio.i2s_irq = intr[0];
+					if (intrCount >= stride + 1)
+						gKernelArgs.arch_args.audio.tx_irq = intr[stride];
+					if (intrCount >= 2 * stride + 1)
+						gKernelArgs.arch_args.audio.rx_irq = intr[2 * stride];
+				}
+
+				if (audio_is_interesting(name, compatible))
+					audio_dump_all_props(cell, 2);
+
+				for (intptr_t sub = of_child(cell);
+						sub != 0 && sub != OF_FAILED; sub = of_peer(sub)) {
+					char subName[40];
+					char subCompatible[56];
+					audio_string_prop(sub, "name", subName, sizeof(subName));
+					audio_string_prop(sub, "compatible", subCompatible,
+						sizeof(subCompatible));
+
+					char gpioFunction[32];
+					audio_string_prop(sub, "audio-gpio", gpioFunction,
+						sizeof(gpioFunction));
+
+					// ★ Print EVERY gpio child, not only the ones that look
+					// like audio. The codec's reset line is what we are hunting
+					// and it need not be named like audio at all - filtering on
+					// the name is exactly how it would stay hidden. Recording
+					// is still limited to the audio ones.
+					bool isAudioGPIO = gpioFunction[0] != '\0'
+						|| audio_contains(subName, "mute")
+						|| audio_contains(subName, "detect")
+						|| audio_contains(subName, "audio")
+						|| audio_contains(subName, "reset")
+						|| audio_contains(subName, "headphone")
+						|| audio_contains(subName, "lineout")
+						|| audio_contains(subName, "amp");
+
+					audio_dump_node(sub, 2);
+					audio_record_sound_node(sub, subName);
+
+					if (isGPIO && isAudioGPIO) {
+						audio_record_gpio(sub,
+							gpioFunction[0] != '\0' ? gpioFunction : subName,
+							gpioBase);
+					}
+
+					// The i2s form (Tumbler/Snapper/Onyx and later): the
+					// i2s-a cell holds three register blocks - the serial bus
+					// control, then the transmit and receive DBDMA channels.
+					if (isI2S) {
+						uint32 subReg[8];
+						uint32 subRegCount = audio_cell_prop(sub, "reg",
+							subReg, 8);
+						if (subRegCount >= 6
+								&& gKernelArgs.arch_args.audio.i2s_offset
+									== 0) {
+							gKernelArgs.arch_args.audio.i2s_offset = subReg[0];
+							gKernelArgs.arch_args.audio.i2s_size = subReg[1];
+							gKernelArgs.arch_args.audio.tx_dbdma_offset
+								= subReg[2];
+							gKernelArgs.arch_args.audio.rx_dbdma_offset
+								= subReg[4];
+							gKernelArgs.arch_args.audio.valid = 1;
+
+							uint32 intr[8];
+							uint32 intrCount = audio_cell_prop(sub,
+								"interrupts", intr, 8);
+							uint32 stride = intrCount >= 6 ? 2 : 1;
+							if (intrCount >= 1)
+								gKernelArgs.arch_args.audio.i2s_irq = intr[0];
+							if (intrCount >= stride + 1)
+								gKernelArgs.arch_args.audio.tx_irq
+									= intr[stride];
+							if (intrCount >= 2 * stride + 1)
+								gKernelArgs.arch_args.audio.rx_irq
+									= intr[2 * stride];
+						}
+					}
+
+					// A codec directly under the cell is on channel 0; one
+					// under an "i2c-bus@N" child is on channel N, and that
+					// number goes in the cell's mode register.
+					uint32 busChannel = 0;
+					if (isI2C && audio_name_is(subName, "i2c-bus")) {
+						uint32 busReg[2];
+						if (audio_cell_prop(sub, "reg", busReg, 2) > 0)
+							busChannel = busReg[0];
+					}
+					if (isI2C)
+						audio_record_codec(sub, subName, subCompatible, 0);
+
+					if (audio_is_interesting(subName, subCompatible))
+						audio_dump_all_props(sub, 3);
+
+					// One more level: the "sound" node hangs off i2s-a, and
+					// carries the layout-id that names the whole audio wiring.
+					for (intptr_t leaf = of_child(sub);
+							leaf != 0 && leaf != OF_FAILED;
+							leaf = of_peer(leaf)) {
+						char leafName[40];
+						char leafCompatible[56];
+						audio_string_prop(leaf, "name", leafName,
+							sizeof(leafName));
+						audio_string_prop(leaf, "compatible", leafCompatible,
+							sizeof(leafCompatible));
+						audio_dump_node(leaf, 3);
+
+						audio_record_sound_node(leaf, leafName);
+						if (isI2C) {
+							audio_record_codec(leaf, leafName, leafCompatible,
+								busChannel);
+						}
+						if (audio_is_interesting(leafName, leafCompatible))
+							audio_dump_all_props(leaf, 4);
+					}
+				}
+			}
+		}
+	}
+
+	// Whatever the platform functions act on. In Apple's Open Firmware a
+	// phandle IS the package handle, so it can be used directly.
+	for (uint32 i = 0; i < sPlatformTargetCount; i++) {
+		char path[160];
+		path[0] = '\0';
+		of_package_to_path((intptr_t)sPlatformTargets[i], path, sizeof(path));
+		audio_dump("platform target %x: %s\n", (unsigned)sPlatformTargets[i],
+			path[0] != '\0' ? path : "(no path)");
+		audio_dump_all_props((intptr_t)sPlatformTargets[i], 1);
+	}
+
+	gKernelArgs.arch_args.of_audio_dump_len = (uint32)sAudioDumpUsed;
+
+	dprintf("audio: macio %x i2s %x (tx dma %x irq %u, rx dma %x irq %u) "
+		"i2c %x codec %s@%x layout %u gpios %u\n",
+		(unsigned)gKernelArgs.arch_args.audio.macio_phys,
+		(unsigned)gKernelArgs.arch_args.audio.i2s_offset,
+		(unsigned)gKernelArgs.arch_args.audio.tx_dbdma_offset,
+		(unsigned)gKernelArgs.arch_args.audio.tx_irq,
+		(unsigned)gKernelArgs.arch_args.audio.rx_dbdma_offset,
+		(unsigned)gKernelArgs.arch_args.audio.rx_irq,
+		(unsigned)gKernelArgs.arch_args.audio.i2c_offset,
+		gKernelArgs.arch_args.audio.codec,
+		(unsigned)gKernelArgs.arch_args.audio.codec_i2c_addr,
+		(unsigned)gKernelArgs.arch_args.audio.layout_id,
+		(unsigned)gKernelArgs.arch_args.audio.gpio_count);
+}
+
+
 extern "C" status_t
 arch_mmu_init(void)
 {
@@ -1689,6 +2285,8 @@ arch_mmu_init(void)
 			of_close(ih);
 		}
 	}
+
+	probe_audio_device_tree();
 
 	return B_OK;
 }
