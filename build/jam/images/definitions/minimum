@@ -60,6 +60,8 @@ SYSTEM_BIN = [ FFilterByBuildFeatures
 	lsindex
 	makebootable
 	media_client
+	tabby_install
+	set_tabby_wallpaper
 	message
 	mimeset
 	mkfs

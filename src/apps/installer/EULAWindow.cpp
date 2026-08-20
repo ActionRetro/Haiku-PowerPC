@@ -13,6 +13,7 @@
 #include <LayoutBuilder.h>
 #include <LayoutUtils.h>
 #include <Roster.h>
+#include <Screen.h>
 #include <ScrollView.h>
 #include <SpaceLayoutItem.h>
 
@@ -66,6 +67,20 @@ EULAWindow::EULAWindow()
 	infoText << B_TRANSLATE(
 		"Have fun and thanks for trying out Haiku!");
 
+#ifdef HAIKU_DISTRO_COMPATIBILITY_COMPATIBLE
+	// Tabby branding: rebrand the product references (leaving the genuine
+	// Haiku resource references - the User Guide and the haiku-os.org site).
+	infoText.ReplaceAll("Haiku Installer", "Tabby Installer");
+	infoText.ReplaceAll("INSTALLING HAIKU", "INSTALLING TABBY");
+	infoText.ReplaceAll("installing Haiku", "installing Tabby");
+	infoText.ReplaceAll("Haiku partition", "Tabby partition");
+	infoText.ReplaceAll("integrate Haiku", "integrate Tabby");
+	infoText.ReplaceAll("add Haiku to it", "add Tabby to it");
+	infoText.ReplaceAll("boot into Haiku", "boot into Tabby");
+	infoText.ReplaceAll("trying out Haiku", "trying out Tabby");
+	infoText.ReplaceAll("beta-quality software", "pre-alpha quality software");
+#endif
+
 	BTextView* textView = new BTextView("eula", be_plain_font, NULL, B_WILL_DRAW);
 	textView->SetInsets(10, 10, 10, 10);
 	textView->MakeEditable(false);
@@ -98,7 +113,18 @@ EULAWindow::EULAWindow()
 	font_height fontHeight;
 	be_plain_font->GetHeight(&fontHeight);
 	const float lineHeight = fontHeight.ascent + fontHeight.descent;
-	GetLayout()->SetExplicitSize(BSize(be_plain_font->StringWidth("M") * 60, lineHeight * 30));
+	float width = be_plain_font->StringWidth("M") * 60;
+	float height = lineHeight * 30;
+	BScreen screen(this);
+	if (screen.IsValid()) {
+		BRect screenFrame = screen.Frame();
+		// leave room for the title bar, the button row and window margins
+		if (width > screenFrame.Width() - 40)
+			width = screenFrame.Width() - 40;
+		if (height > screenFrame.Height() - 100)
+			height = screenFrame.Height() - 100;
+	}
+	GetLayout()->SetExplicitSize(BSize(width, height));
 	CenterOnScreen();
 	Show();
 }

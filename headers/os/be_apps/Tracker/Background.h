@@ -56,7 +56,8 @@ enum {
 	B_BACKGROUND_MODE_USE_ORIGIN,
 	B_BACKGROUND_MODE_CENTERED,		// only works on Desktop
 	B_BACKGROUND_MODE_SCALED,		// only works on Desktop
-	B_BACKGROUND_MODE_TILED
+	B_BACKGROUND_MODE_TILED,
+	B_BACKGROUND_MODE_SCALED_BOTTOM_RIGHT	// Tabby: 2x asset, bottom-right
 };
 
 /*----------------------------------------------------------------*/

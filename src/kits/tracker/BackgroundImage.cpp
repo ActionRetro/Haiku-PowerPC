@@ -240,6 +240,25 @@ BackgroundImage::Show(BackgroundImageInfo* info, BView* view)
 				destinationBitmapBounds.OffsetTo(info->fOffset);
 			break;
 
+		case kScaledBottomRight:
+			if (fIsDesktop) {
+				// The asset is authored at 2x display scale; draw it untiled at
+				// half size in the bottom-right corner, with padding. Following
+				// the bottom-right keeps it anchored across resolution changes.
+				const float kPadding = 24;
+				const float kScale = 0.5;
+				float width = (bitmapBounds.Width() + 1) * kScale;
+				float height = (bitmapBounds.Height() + 1) * kScale;
+				destinationBitmapBounds.Set(0, 0, width - 1, height - 1);
+				destinationBitmapBounds.OffsetTo(
+					viewBounds.right - width + 1 - kPadding,
+					viewBounds.bottom - height + 1 - kPadding);
+				followFlags = B_FOLLOW_RIGHT | B_FOLLOW_BOTTOM;
+				options |= B_FILTER_BITMAP_BILINEAR;
+			} else
+				destinationBitmapBounds.OffsetTo(info->fOffset);
+			break;
+
 		case kTiled:
 			if (fIsDesktop) {
 				destinationBitmapBounds.OffsetBy(
@@ -375,6 +394,21 @@ BackgroundImage::ScreenChanged(BRect, color_space)
 
 		fView->SetViewBitmap(fShowingBitmap->fBitmap, bitmapBounds,
 			destinationBitmapBounds, B_FOLLOW_NONE, 0);
+		fView->Invalidate();
+	} else if (fShowingBitmap->fMode == kScaledBottomRight) {
+		BRect viewBounds(fView->Bounds());
+		BRect bitmapBounds(fShowingBitmap->fBitmap->Bounds());
+		const float kPadding = 24;
+		const float kScale = 0.5;
+		float width = (bitmapBounds.Width() + 1) * kScale;
+		float height = (bitmapBounds.Height() + 1) * kScale;
+		BRect destinationBitmapBounds(0, 0, width - 1, height - 1);
+		destinationBitmapBounds.OffsetTo(
+			viewBounds.right - width + 1 - kPadding,
+			viewBounds.bottom - height + 1 - kPadding);
+		fView->SetViewBitmap(fShowingBitmap->fBitmap, bitmapBounds,
+			destinationBitmapBounds, B_FOLLOW_RIGHT | B_FOLLOW_BOTTOM,
+			B_FILTER_BITMAP_BILINEAR);
 		fView->Invalidate();
 	}
 }

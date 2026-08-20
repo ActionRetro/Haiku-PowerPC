@@ -120,7 +120,11 @@ InitializeBFSEditor::GetParameters(BString& parameters)
 void
 InitializeBFSEditor::_CreateViewControls()
 {
+#ifdef HAIKU_DISTRO_COMPATIBILITY_COMPATIBLE
+	fNameControl = new BTextControl(B_TRANSLATE("Name:"), "Tabby", NULL);
+#else
 	fNameControl = new BTextControl(B_TRANSLATE("Name:"), "Haiku", NULL);
+#endif
 	fNameControl->SetModificationMessage(new BMessage(MSG_NAME_CHANGED));
 	fNameControl->TextView()->SetMaxBytes(31);
 

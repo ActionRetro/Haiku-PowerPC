@@ -44,6 +44,7 @@ public:
 	// BWindow interface
 	virtual	bool				QuitRequested();
 	virtual	void				MessageReceived(BMessage* message);
+	virtual	void				Show();
 
 	// MainWindow
 			status_t			StoreSettings(BMessage* archive) const;

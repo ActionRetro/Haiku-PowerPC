@@ -275,7 +275,7 @@ SEARCH on $(userLaunchScripts) = [ FDirName $(HAIKU_TOP) data launch ] ;
 AddFilesToPackage data user_launch : $(userLaunchScripts) ;
 
 # first login scripts
-local firstLoginFiles = default_deskbar_items.sh ;
+local firstLoginFiles = default_deskbar_items.sh set_tabby_wallpaper.sh ;
 firstLoginFiles = $(firstLoginFiles:G=first-login) ;
 SEARCH on $(firstLoginFiles)
 	= [ FDirName $(HAIKU_TOP) data system boot first_login ] ;
@@ -284,7 +284,9 @@ AddFilesToPackage boot first-login : $(firstLoginFiles) ;
 # artwork and sounds
 local logoArtwork =
 	$(HAIKU_INCLUDE_TRADEMARKS)"HAIKU logo - white on blue - big.png"
-	$(HAIKU_INCLUDE_TRADEMARKS)"HAIKU logo - white on blue - normal.png" ;
+	$(HAIKU_INCLUDE_TRADEMARKS)"HAIKU logo - white on blue - normal.png"
+	tabby_installer_bg.png
+	tabby_desktop_bg.png ;
 SEARCH on $(logoArtwork) = [ FDirName $(HAIKU_TOP) data artwork ] ;
 AddFilesToPackage data artwork : $(logoArtwork) ;
 
@@ -466,6 +468,7 @@ AddFilesToPackage add-ons kernel network protocols
 AddFilesToPackage add-ons Screen\ Savers : $(SYSTEM_ADD_ONS_SCREENSAVERS) ;
 
 AddFilesToPackage add-ons disk_systems :
+	<disk_system>apple
 	<disk_system>fat
 	<disk_system>intel
 	<disk_system>gpt

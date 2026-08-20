@@ -70,7 +70,8 @@ public:
 		kAtOffset,
 		kCentered,			// only works on Desktop
 		kScaledToFit,		// only works on Desktop
-		kTiled
+		kTiled,
+		kScaledBottomRight	// Tabby: 2x asset, bottom-right corner
 	};
 
 	class BackgroundImageInfo {

@@ -114,6 +114,10 @@ StdBinCommands
 	fstrim.cpp
 	: shared be : $(haiku-utils_rsrc) ;
 
+StdBinCommands
+	set_tabby_wallpaper.cpp
+	: be ;
+
 # standard commands that need libbe.so and libsupc++.so
 StdBinCommands
 	alert.cpp
@@ -274,6 +278,7 @@ SubInclude HAIKU_TOP src bin rc ;
 SubInclude HAIKU_TOP src bin screen_blanker ;
 SubInclude HAIKU_TOP src bin screenmode ;
 SubInclude HAIKU_TOP src bin writembr ;
+SubInclude HAIKU_TOP src bin tabby_install ;
 
 # debugging tools
 SubInclude HAIKU_TOP src bin debug ;

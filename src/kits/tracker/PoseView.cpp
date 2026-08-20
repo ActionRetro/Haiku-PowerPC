@@ -1783,10 +1783,19 @@ BPoseView::CreateVolumePose(BVolume* volume)
 	entry.GetRef(&ref);
 
 	// If the volume is mounted at a directory of a persistent volume, we don't
-	// want it on the desktop or in the disks window.
+	// want it on the desktop or in the disks window. On live (write_overlay)
+	// media the boot volume is not flagged persistent, so also skip volumes
+	// nested inside the boot volume (e.g. the packagefs system/config volumes).
 	BVolume parentVolume(ref.device);
-	if (parentVolume.InitCheck() == B_OK && parentVolume.IsPersistent())
-		return;
+	if (parentVolume.InitCheck() == B_OK) {
+		if (parentVolume.IsPersistent())
+			return;
+		BVolume bootVolume;
+		if (BVolumeRoster().GetBootVolume(&bootVolume) == B_OK
+			&& parentVolume == bootVolume) {
+			return;
+		}
+	}
 
 	node_ref itemNode;
 	root.GetNodeRef(&itemNode);

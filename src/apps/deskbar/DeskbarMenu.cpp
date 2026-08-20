@@ -245,12 +245,13 @@ TDeskbarMenu::AddStandardDeskbarMenuItems()
 // make them visible to collectcatkeys in either case.
 B_TRANSLATE_MARK_VOID("About Haiku")
 B_TRANSLATE_MARK_VOID("About this system")
+B_TRANSLATE_MARK_VOID("About Tabby")
 
 	item = new BMenuItem(
 #ifdef HAIKU_DISTRO_COMPATIBILITY_OFFICIAL
 	B_TRANSLATE_NOCOLLECT("About Haiku")
 #else
-	B_TRANSLATE_NOCOLLECT("About this system")
+	B_TRANSLATE_NOCOLLECT("About Tabby")
 #endif
 		, new BMessage(kShowSplash));
 	item->SetEnabled(!dragging);

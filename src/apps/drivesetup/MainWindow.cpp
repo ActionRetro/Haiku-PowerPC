@@ -759,6 +759,49 @@ MainWindow::ApplyDefaultSettings()
 }
 
 
+void
+MainWindow::Show()
+{
+	BWindow::Show();
+
+	// Make sure the window fits on small screens (e.g. 640x480 on old Macs),
+	// regardless of how it was launched (default position, saved settings, or
+	// the Installer's "Set up partitions" Tools menu).
+	if (!Lock())
+		return;
+
+	BScreen screen(this);
+	if (screen.IsValid()) {
+		BRect screenFrame = screen.Frame();
+		float maxWidth = screenFrame.Width() - 10.0f;
+		float maxHeight = screenFrame.Height() - 30.0f;
+			// leave room for the window's title tab
+
+		float width = Frame().Width();
+		float height = Frame().Height();
+		if (width > maxWidth || height > maxHeight) {
+			ResizeTo(min_c(width, maxWidth), min_c(height, maxHeight));
+		}
+
+		// nudge the (possibly resized) window fully on-screen
+		BRect frame = Frame();
+		float left = frame.left;
+		float top = frame.top;
+		if (frame.right > screenFrame.right)
+			left = screenFrame.right - frame.Width();
+		if (frame.bottom > screenFrame.bottom)
+			top = screenFrame.bottom - frame.Height();
+		if (left < screenFrame.left + 5.0f)
+			left = screenFrame.left + 5.0f;
+		if (top < screenFrame.top + 26.0f)
+			top = screenFrame.top + 26.0f;
+		MoveTo(left, top);
+	}
+
+	Unlock();
+}
+
+
 static void
 FileErrorAlert(const char* text, const char* fileName, alert_type type)
 {
