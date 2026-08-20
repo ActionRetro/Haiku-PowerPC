@@ -136,6 +136,23 @@ ATAChannel::_DevicePresent(int device)
 	bool present = (taskFile.chs.sector_count == 0x5a &&
 		taskFile.chs.sector_number == 0xa5);
 
+	if (!present) {
+		// ATAPI (PACKET) devices do not hold the sector count/number registers
+		// as scratch -- that register is the ATAPI interrupt-reason register --
+		// so the classic write/read-back probe above always fails for them.
+		// Fall back to the ATAPI signature (0xeb14 in the LBA mid/high
+		// registers) that a PACKET device places there after reset. A floating
+		// (empty) bus reads back 0xffff, so this yields no false positives.
+		ata_task_file signatureFile;
+		if (_ReadRegs(&signatureFile, ATA_MASK_LBA_MID | ATA_MASK_LBA_HIGH)
+				== B_OK) {
+			uint16 signature = signatureFile.lba.lba_8_15
+				| (((uint16)signatureFile.lba.lba_16_23) << 8);
+			if (signature == ATA_SIGNATURE_ATAPI)
+				present = true;
+		}
+	}
+
 	TRACE_ALWAYS("_DevicePresent: device %i, presence %d\n", device, present);
 	return present;
 }
@@ -152,6 +169,19 @@ ATAChannel::ScanBus()
 	// and panic later with "did not find any boot partitions".
 	snooze(250 * 1000);
 
+	// Reset the channel BEFORE probing for device presence. A software reset
+	// makes each device place its signature in the task-file registers: 0x0000
+	// for ATA, 0xeb14 for ATAPI (PACKET) devices. _DevicePresent() relies on
+	// that fresh ATAPI signature to detect optical drives, whose interrupt-
+	// reason register defeats the classic write/read-back scratch probe. (Open
+	// Firmware may have left the registers dirty from its own boot-time
+	// probing, so without this reset the signature would be stale.)
+	status_t result = Reset();
+	if (result != B_OK) {
+		TRACE_ERROR("resetting the channel failed\n");
+		return result;
+	}
+
 	for (int i = 0; i < fDeviceCount; i++) {
 		bool present = false;
 		for (int retry = 0; retry < 5 && !present; retry++) {
@@ -162,7 +192,9 @@ ATAChannel::ScanBus()
 		deviceMask |= (int)present << i;
 	}
 
-	status_t result = Reset();
+	// Reset again so the identification loop below starts from a clean state
+	// (device signatures freshly latched) regardless of the probing above.
+	result = Reset();
 	if (result != B_OK) {
 		TRACE_ERROR("resetting the channel failed\n");
 		return result;
@@ -808,7 +840,14 @@ ATAChannel::ExecutePIOTransfer(ATARequest *request)
 		}
 	}
 
-	if (result == B_OK && WaitDataRequest(false) != B_OK) {
+	// For ATAPI, the device may legitimately keep DRQ asserted between the
+	// individual DRQ blocks of a PACKET data phase -- the ATAPIDevice PIO loop
+	// re-reads the byte count and drives each block, so a still-asserted DRQ
+	// here is not an error. Requiring it to clear (as we must for plain ATA)
+	// aborted multi-block ATAPI reads mid-transfer and wedged the device,
+	// which stalled booting from an optical (CD) boot volume.
+	if (result == B_OK && !request->Device()->IsATAPI()
+			&& WaitDataRequest(false) != B_OK) {
 		TRACE_ERROR("device still expects data transfer\n");
 		result = B_ERROR;
 	}

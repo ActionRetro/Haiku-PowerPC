@@ -47,6 +47,7 @@ for platform in [ MultiBootSubDirSetup ] {
 						BOOT_SUPPORT_PARTITION_APPLE
 
 						BOOT_SUPPORT_FILE_SYSTEM_AMIGA_FFS
+						BOOT_SUPPORT_FILE_SYSTEM_ISO9660
 					;
 				}
 				case "x86" :

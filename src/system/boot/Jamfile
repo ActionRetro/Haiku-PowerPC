@@ -380,6 +380,7 @@ for platform in [ MultiBootSubDirSetup ] {
 				boot_amiga_ffs.a
 				boot_tarfs.a
 				boot_fatfs.a
+				boot_iso9660.a
 				boot_packagefs.a
 
 				boot_loader.a

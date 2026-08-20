@@ -234,8 +234,18 @@ ATAPIDevice::_FillTaskFilePacket(ATARequest *request)
 	fRegisterMask = ATA_MASK_FEATURES | ATA_MASK_BYTE_COUNT;
 	fTaskFile.packet.dma = request->UseDMA() ? 1 : 0;
 	fTaskFile.packet.ovl = 0;
-	fTaskFile.packet.byte_count_0_7 = ccb->data_length & 0xff;
-	fTaskFile.packet.byte_count_8_15 = ccb->data_length >> 8;
+	// The byte count register is a 16-bit *per-DRQ-block limit*, not the total
+	// transfer size. Programming it with data_length directly truncates to 16
+	// bits: any transfer that is an exact multiple of 64KiB yields a limit of 0,
+	// which is illegal -- an ATAPI device then hands back a zero-length data
+	// window and a PIO-only host (mac-io, no ATAPI DMA) spins forever. Cap the
+	// limit at 0xFFFE; the device delivers larger transfers across multiple DRQ
+	// blocks, which the PIO loop in SendPacket() already handles.
+	uint32 byteCountLimit = ccb->data_length;
+	if (byteCountLimit > 0xfffe)
+		byteCountLimit = 0xfffe;
+	fTaskFile.packet.byte_count_0_7 = byteCountLimit & 0xff;
+	fTaskFile.packet.byte_count_8_15 = (byteCountLimit >> 8) & 0xff;
 	fTaskFile.packet.command = ATA_COMMAND_PACKET;
 	return B_OK;
 }

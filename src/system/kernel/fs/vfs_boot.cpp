@@ -25,6 +25,7 @@
 #include <file_cache.h>
 #include <fs/KPath.h>
 #include <kmodule.h>
+#include <safemode.h>
 #include <syscalls.h>
 #include <util/KMessage.h>
 #include <util/Stack.h>
@@ -504,6 +505,10 @@ vfs_mount_boot_file_system(kernel_args* args)
 	}
 
 	dev_t bootDevice = -1;
+	// PPC live-CD test hook: force the BFS boot volume read-only so the
+	// bfs:write_overlay is engaged (validates the live desktop before the
+	// ATAPI/CD path exists). Toggle with kernel setting force_read_only_boot.
+	bool sForceReadOnlyBoot = get_safemode_boolean("force_read_only_boot", false);
 
 	KPartition* bootPartition;
 	while (partitions.Pop(&bootPartition)) {
@@ -516,7 +521,7 @@ vfs_mount_boot_file_system(kernel_args* args)
 		if (strcmp(bootPartition->ContentType(), kPartitionTypeISO9660) == 0) {
 			fsName = "iso9660:write_overlay:attribute_overlay";
 			readOnly = true;
-		} else if (bootPartition->IsReadOnly()
+		} else if ((bootPartition->IsReadOnly() || sForceReadOnlyBoot)
 			&& strcmp(bootPartition->ContentType(), kPartitionTypeBFS) == 0) {
 			fsName = "bfs:write_overlay";
 			readOnly = true;

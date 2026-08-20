@@ -101,5 +101,6 @@ extern file_system_module_info gFATFileSystemModule;
 extern file_system_module_info gHFSPlusFileSystemModule;
 extern file_system_module_info gAmigaFFSFileSystemModule;
 extern file_system_module_info gTarFileSystemModule;
+extern file_system_module_info gISO9660FileSystemModule;
 
 #endif	/* KERNEL_BOOT_PARTITIONS_H */
