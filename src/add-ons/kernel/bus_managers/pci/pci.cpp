@@ -1157,6 +1157,18 @@ PCI::_DiscoverDevice(PCIBus *bus, uint8 dev, uint8 function)
 			PCI_secondary_bus, 1);
 		PCIBus *newBus = _CreateBus(newDev, bus->domain, secondaryBus);
 		_DiscoverBus(newBus);
+	} else if (baseClass == PCI_bridge && subClass == PCI_cardbus) {
+		// CardBus bridge (PCI header type 2). Match by class, not header type:
+		// on the ppc boot bridge the header-type byte can misread. The platform
+		// host-bridge driver powers the socket and assigns the CardBus bus
+		// number (same config offset as a PPB's secondary bus) before discovery;
+		// recurse so an inserted CardBus card becomes a first-class PCI device.
+		uint8 cardbusBus = ReadConfig(bus->domain, bus->bus, dev, function,
+			PCI_secondary_bus, 1);
+		if (cardbusBus != 0 && cardbusBus != bus->bus) {
+			PCIBus *newBus = _CreateBus(newDev, bus->domain, cardbusBus);
+			_DiscoverBus(newBus);
+		}
 	}
 }
 

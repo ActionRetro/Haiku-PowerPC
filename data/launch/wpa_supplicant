@@ -1,0 +1,3 @@
+service x-vnd.malinen-wpa_supplicant {
+	launch /boot/system/non-packaged/bin/wpa_supplicant
+}

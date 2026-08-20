@@ -35,6 +35,17 @@
 #define _FBSD_BUS_SWAP64(x)	(x)
 #endif
 
+// PowerPC needs an eieio between MMIO accesses: a plain volatile store/load
+// only prevents *compiler* reordering, not the hardware write buffer, so a
+// device register write immediately followed by a read (e.g. bwi_rf_read:
+// write RF_CTRL, read RF_DATA) can race -- the read beats the write, giving a
+// bus error / stale data. eieio enforces in-order execution of I/O accesses.
+#if defined(__POWERPC__) || defined(__powerpc__) || defined(__ppc__)
+#	define _FBSD_BUS_BARRIER()	__asm__ __volatile__("eieio" : : : "memory")
+#else
+#	define _FBSD_BUS_BARRIER()	__asm__ __volatile__("" : : : "memory")
+#endif
+
 
 static __inline u_int8_t
 bus_space_read_1(bus_space_tag_t tag, bus_space_handle_t handle,
@@ -42,6 +53,7 @@ bus_space_read_1(bus_space_tag_t tag, bus_space_handle_t handle,
 {
 	if (tag != BUS_SPACE_TAG_MEM)
 		return BUS_SPACE_INVALID_DATA;
+	_FBSD_BUS_BARRIER();
 	return (*(volatile u_int8_t *)(handle + offset));
 }
 
@@ -52,6 +64,7 @@ bus_space_read_2(bus_space_tag_t tag, bus_space_handle_t handle,
 {
 	if (tag != BUS_SPACE_TAG_MEM)
 		return BUS_SPACE_INVALID_DATA;
+	_FBSD_BUS_BARRIER();
 	return _FBSD_BUS_SWAP16(*(volatile u_int16_t *)(handle + offset));
 }
 
@@ -62,6 +75,7 @@ bus_space_read_4(bus_space_tag_t tag, bus_space_handle_t handle,
 {
 	if (tag != BUS_SPACE_TAG_MEM)
 		return BUS_SPACE_INVALID_DATA;
+	_FBSD_BUS_BARRIER();
 	return _FBSD_BUS_SWAP32(*(volatile u_int32_t *)(handle + offset));
 }
 
@@ -72,6 +86,7 @@ bus_space_read_8(bus_space_tag_t tag, bus_space_handle_t handle,
 {
 	if (tag != BUS_SPACE_TAG_MEM)
 		return BUS_SPACE_INVALID_DATA;
+	_FBSD_BUS_BARRIER();
 	return _FBSD_BUS_SWAP64(*(volatile uint64_t *)(handle + offset));
 }
 
@@ -83,6 +98,7 @@ bus_space_write_1(bus_space_tag_t tag, bus_space_handle_t bsh,
 	if (tag != BUS_SPACE_TAG_MEM)
 		return;
 	*(volatile u_int8_t *)(bsh + offset) = value;
+	_FBSD_BUS_BARRIER();
 }
 
 
@@ -93,6 +109,7 @@ bus_space_write_2(bus_space_tag_t tag, bus_space_handle_t bsh,
 	if (tag != BUS_SPACE_TAG_MEM)
 		return;
 	*(volatile u_int16_t *)(bsh + offset) = _FBSD_BUS_SWAP16(value);
+	_FBSD_BUS_BARRIER();
 }
 
 
@@ -103,6 +120,7 @@ bus_space_write_4(bus_space_tag_t tag, bus_space_handle_t bsh,
 	if (tag != BUS_SPACE_TAG_MEM)
 		return;
 	*(volatile u_int32_t *)(bsh + offset) = _FBSD_BUS_SWAP32(value);
+	_FBSD_BUS_BARRIER();
 }
 
 
@@ -113,6 +131,7 @@ bus_space_write_8(bus_space_tag_t tag, bus_space_handle_t bsh,
 	if (tag != BUS_SPACE_TAG_MEM)
 		return;
 	*(volatile uint64_t *)(bsh + offset) = _FBSD_BUS_SWAP64(value);
+	_FBSD_BUS_BARRIER();
 }
 
 

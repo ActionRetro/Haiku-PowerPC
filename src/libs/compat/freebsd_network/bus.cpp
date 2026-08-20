@@ -58,8 +58,14 @@ map_mem(void **virtualAddr, phys_addr_t _phy, size_t size, uint32 protection,
 	area_id area;
 
 	size = roundup(size + offset, B_PAGE_SIZE);
-	area = map_physical_memory(name, physicalAddr, size, B_ANY_KERNEL_ADDRESS,
-		protection, virtualAddr);
+	// Device register BARs must be mapped uncached: on PowerPC a cached MMIO
+	// mapping allows speculative reads and cache-line-fill bursts that
+	// master-abort (machine check) and returns stale cached register values,
+	// which breaks drivers doing tight register read/write sequences (e.g. bwi
+	// RF/PHY init). B_UNCACHED_MEMORY is the correct attribute for MMIO on all
+	// architectures.
+	area = map_physical_memory(name, physicalAddr, size,
+		B_ANY_KERNEL_ADDRESS | B_UNCACHED_MEMORY, protection, virtualAddr);
 	if (area < B_OK)
 		return area;
 
@@ -89,6 +95,36 @@ bus_alloc_mem_resource(device_t dev, struct resource *res, pci_info *info,
 	phys_addr_t addr = info->u.h0.base_registers[bar_index];
 	uint64 size = info->u.h0.base_register_sizes[bar_index];
 	uchar flags = info->u.h0.base_register_flags[bar_index];
+
+	// Recover a BAR the early PCI enumeration missed. Some devices are not
+	// fully responsive when the PCI bus is first enumerated - the PowerBook G4
+	// built-in AirPort (14e4:4320) records its BAR as base 0 / size 0 - yet are
+	// live by driver-attach time. Re-read and re-size the BAR from config space
+	// now, translate its PCI address to a host address, and use that.
+	if (size == 0) {
+		uint32 regoff = PCI_base_registers + bar_index * 4;
+		uint32 saved = pci_read_config(dev, regoff, 4);
+		if ((saved & PCI_address_space) == 0) {
+			pci_write_config(dev, regoff, 0xffffffff, 4);
+			uint32 szmask = pci_read_config(dev, regoff, 4);
+			pci_write_config(dev, regoff, saved, 4);
+			uint32 pciBase = saved & PCI_address_memory_32_mask;
+			uint32 maskBits = szmask & PCI_address_memory_32_mask;
+			if (pciBase != 0 && maskBits != 0) {
+				phys_addr_t host = gPci->ram_address(pciBase);
+				if (host != 0) {
+					addr = host;
+					size = (uint64)(uint32)(~maskBits) + 1;
+					flags = saved & ~PCI_address_memory_32_mask;
+					dprintf("compat: recovered BAR%d for %04x:%04x pci=%#lx "
+						"host=%#lx size=%#lx (PCI enumeration missed it)\n",
+						bar_index, info->vendor_id, info->device_id,
+						(unsigned long)pciBase, (unsigned long)host,
+						(unsigned long)size);
+				}
+			}
+		}
+	}
 
 	// reject empty regions
 	if (size == 0)

@@ -62,7 +62,7 @@ extern "C" {
 #include <shared.h>
 
 
-#define TRACE_WLAN
+// #define TRACE_WLAN  // Tabby: silenced wlan_control/scan_done log spam
 #ifdef TRACE_WLAN
 #	define TRACE(x...) dprintf(x);
 #else
@@ -197,7 +197,7 @@ stop_wlan(device_t device)
 status_t
 wlan_open(void* cookie)
 {
-	dprintf("wlan_open(%p)\n", cookie);
+	TRACE("wlan_open(%p)\n", cookie);
 	struct ifnet* ifp = (struct ifnet*)cookie;
 
 	ifp->if_init(ifp->if_softc);
@@ -212,7 +212,7 @@ wlan_open(void* cookie)
 status_t
 wlan_close(void* cookie)
 {
-	dprintf("wlan_close(%p)\n", cookie);
+	TRACE("wlan_close(%p)\n", cookie);
 	struct ifnet* ifp = (struct ifnet*)cookie;
 
 	ifp->if_flags &= ~IFF_UP;
@@ -854,6 +854,7 @@ ieee80211_notify_node_join(struct ieee80211_node* ni, int newassoc)
 	struct ifnet* ifp = vap->iv_ifp;
 
 	TRACE("%s\n", __FUNCTION__);
+	dprintf("TABBY_ASSOC: notify_node_join fired -> WLAN_JOINED\n");
 
 	if (ni == vap->iv_bss)
 		if_link_state_change(ifp, LINK_STATE_UP);

@@ -233,6 +233,8 @@ sta_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 	IEEE80211_LOCK_ASSERT(ic);
 
 	ostate = vap->iv_state;
+	net80211_printf("TABBY_B10 state: %s -> %s\n",
+	    ieee80211_state_name[ostate], ieee80211_state_name[nstate]);
 	IEEE80211_DPRINTF(vap, IEEE80211_MSG_STATE, "%s: %s -> %s (%d)\n",
 	    __func__, ieee80211_state_name[ostate],
 	    ieee80211_state_name[nstate], arg);
@@ -380,6 +382,7 @@ sta_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 		switch (ostate) {
 		case IEEE80211_S_AUTH:
 		case IEEE80211_S_ASSOC:
+			net80211_printf("TABBY_TX: sending ASSOC_REQ\n");
 			IEEE80211_SEND_MGMT(ni,
 			    IEEE80211_FC0_SUBTYPE_ASSOC_REQ, 0);
 			break;
@@ -1408,6 +1411,11 @@ sta_recv_mgmt(struct ieee80211_node *ni, struct mbuf *m0, int subtype,
 	wh = mtod(m0, struct ieee80211_frame *);
 	frm = (uint8_t *)&wh[1];
 	efrm = mtod(m0, uint8_t *) + m0->m_len;
+	if (subtype != IEEE80211_FC0_SUBTYPE_BEACON
+		&& subtype != IEEE80211_FC0_SUBTYPE_PROBE_RESP
+		&& subtype != IEEE80211_FC0_SUBTYPE_PROBE_REQ)
+		net80211_printf("TABBY_RX: mgmt subtype=0x%02x state=%d\n",
+			subtype, ni->ni_vap->iv_state);
 	switch (subtype) {
 	case IEEE80211_FC0_SUBTYPE_PROBE_RESP:
 	case IEEE80211_FC0_SUBTYPE_BEACON: {
@@ -1744,6 +1752,7 @@ sta_recv_mgmt(struct ieee80211_node *ni, struct mbuf *m0, int subtype,
 		uint16_t capinfo, associd;
 		uint16_t status;
 
+		net80211_printf("TABBY_ASSOC: ASSOC_RESP frame in, state=%d\n", vap->iv_state);
 		if (vap->iv_state != IEEE80211_S_ASSOC) {
 			vap->iv_stats.is_rx_mgtdiscard++;
 			return;
@@ -1766,6 +1775,7 @@ sta_recv_mgmt(struct ieee80211_node *ni, struct mbuf *m0, int subtype,
 		frm += 2;
 		status = le16toh(*(uint16_t *)frm);
 		frm += 2;
+		net80211_printf("TABBY_ASSOC: status=%d\n", status);
 		if (status != 0) {
 			IEEE80211_NOTE_MAC(vap, IEEE80211_MSG_ASSOC,
 			    wh->i_addr2, "%sassoc failed (reason %d)",
@@ -1945,6 +1955,7 @@ sta_recv_mgmt(struct ieee80211_node *ni, struct mbuf *m0, int subtype,
 		    IEEE80211_ATH_CAP(vap, ni, IEEE80211_NODE_TURBOP) ?
 			", turbo" : ""
 		);
+		net80211_printf("TABBY_ASSOC: reached RUN transition\n");
 		ieee80211_new_state(vap, IEEE80211_S_RUN, subtype);
 		break;
 	}

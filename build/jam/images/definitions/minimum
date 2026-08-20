@@ -416,6 +416,7 @@ SYSTEM_ADD_ONS_DRIVERS_NET = [ FFilterByBuildFeatures
 
 	ppc @{
 		gem  # Apple GMAC ethernet (works on real G4 + Pismo G4)
+		broadcom43xx  # Broadcom BCM43xx WiFi (bwi) - TiBook CardBus
 	}@ # ppc
 
 	etherpci
@@ -487,6 +488,34 @@ AddFilesToHaikuImage home config settings boot : $(userBootScripts) ;
 SEARCH on <user-first-login>first_login
 	= [ FDirName $(HAIKU_TOP) data settings ] ;
 AddFilesToHaikuImage home config settings : <user-first-login>first_login ;
+
+# Broadcom 43xx (bwi) firmware for the TiBook CardBus WiFi card (ppc only).
+# Extracted from wl_apsta-3.130.20.0.o via b43-fwcutter and renamed to the
+# bwi_v3_* names the driver's firmware_get() requests. Baked in because ppc has
+# no on-target package repo for the usual runtime install-wifi-firmwares.sh path.
+if $(TARGET_ARCH) = ppc {
+	local bwiFirmware =
+		bwi_v3_ucode bwi_v3_ucode2 bwi_v3_ucode4 bwi_v3_ucode5 bwi_v3_ucode11
+		bwi_v3_pcm4 bwi_v3_pcm5
+		bwi_v3_a0g0initvals2 bwi_v3_a0g0initvals5 bwi_v3_a0g1initvals5
+		bwi_v3_b0g0initvals2 bwi_v3_b0g0initvals5
+		bwi_v3_a0g0bsinitvals2 bwi_v3_a0g0bsinitvals5 bwi_v3_a0g1bsinitvals5
+		bwi_v3_b0g0bsinitvals2 bwi_v3_b0g0bsinitvals5 ;
+	SEARCH on $(bwiFirmware)
+		= [ FDirName $(HAIKU_TOP) data firmware broadcom43xx ] ;
+	AddFilesToHaikuImage system non-packaged data firmware broadcom43xx
+		: $(bwiFirmware) ;
+
+	local bwiWpaSupplicant = wpa_supplicant ;
+	SEARCH on $(bwiWpaSupplicant) = [ FDirName $(HAIKU_TOP) data wifi ] ;
+	AddFilesToHaikuImage system non-packaged bin : $(bwiWpaSupplicant) ;
+	local bwiWpaLaunch = <wpa>wpa_supplicant ;
+	SEARCH on $(bwiWpaLaunch) = [ FDirName $(HAIKU_TOP) data launch ] ;
+	# user_launch (not launch): the USER launch_daemon runs these in the desktop
+	# session, so wpa_supplicant can show its password window. The system
+	# launch_daemon (data/launch) has no app_server connection.
+	AddFilesToHaikuImage system non-packaged data user_launch : $(bwiWpaLaunch) ;
+}
 
 local etcDir = [ FDirName $(HAIKU_TOP) data etc ] ;
 local etcFiles = inputrc profile ;
