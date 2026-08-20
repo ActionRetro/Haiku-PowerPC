@@ -33,10 +33,31 @@ rule ArchitectureSetup architecture
 	}
 
 	# default architecture tuning
+	HAIKU_PPC_CPU ?= 750 ;   # overridden per build tree; see the ppc case below
 	local cpu = $(HAIKU_CPU_$(architecture)) ;
 	local archFlags ;
 	switch $(cpu) {
-		case ppc : archFlags += -mcpu=750 ;
+		case ppc : {
+			# ★ Two Tabby images, one source tree. HAIKU_PPC_CPU is set per
+			# BUILD TREE (generated.ppc/build/BuildConfig), so the G3 and G4
+			# trees can differ without a reconfigure or a rebuild-on-switch:
+			#
+			#   750            G3 image. Also runs on every G4, just without
+			#                  AltiVec, so it is the universal fallback.
+			#   7400 + 7450    G4 image. -mcpu=7400 is the AltiVec BASELINE,
+			#                  valid on every G4 from the 1999 7400 through the
+			#                  7447A; -mtune=7450 schedules for the common
+			#                  74x0e cores without emitting anything a 7400
+			#                  cannot execute. -mcpu=7450 would narrow the
+			#                  hardware we run on for no real gain.
+			#
+			# GCC turns AltiVec ON automatically for -mcpu=7400/7450, so a G4
+			# build will NOT run on a G3 - hence two images rather than one.
+			archFlags += -mcpu=$(HAIKU_PPC_CPU) ;
+			if $(HAIKU_PPC_TUNE) {
+				archFlags += -mtune=$(HAIKU_PPC_TUNE) ;
+			}
+		}
 		case arm : archFlags += -march=armv7-a -mfloat-abi=hard ;
 		case arm64 : archFlags += -march=armv8.2-a+fp16 ;
 		case x86 : archFlags += -march=pentium ;
@@ -406,6 +427,25 @@ rule KernelArchitectureSetup architecture
 			HAIKU_KERNEL_C++FLAGS += -m68020-60 ;
 
 		case ppc :
+			# ★ The BOOT LOADER is G3 code in both images too, and for a
+			# stronger reason than the kernel: it runs BEFORE the kernel turns
+			# AltiVec on, so an AltiVec instruction there would trap on a G4 as
+			# surely as on a G3. The G4 cost model also made GCC emit calls to
+			# libgcc's out-of-line register save/restore helpers
+			# (_restgpr_*_x), which the loader does not link against - that
+			# link failure is what surfaced this.
+			HAIKU_BOOT_CCFLAGS += -mcpu=750 ;
+			HAIKU_BOOT_C++FLAGS += -mcpu=750 ;
+
+			# ★ The kernel is built for the G3 in BOTH images, deliberately.
+			# It is the thing that MANAGES AltiVec state across context
+			# switches, so it must not be using AltiVec itself; and a G3-safe
+			# kernel means the G4 image's kernel is identical to the G3 one,
+			# which removes a whole class of "which kernel am I debugging"
+			# confusion. Userland is where the AltiVec win actually is.
+			HAIKU_KERNEL_CCFLAGS += -mcpu=750 ;
+			HAIKU_KERNEL_C++FLAGS += -mcpu=750 ;
+
 			# Build a position independent PPC kernel. We need to be able to
 			# relocate the kernel, since the virtual address space layout at
 			# boot time is not fixed.

@@ -179,8 +179,11 @@ rule DefineDefaultBuildProfiles
 			Echo Building Haiku Minimum Target ;
 			HAIKU_IMAGE_HOST_NAME ?= shredder ;
 			# Larger than the 300 MB default to fit the bundled apps/demos/
-			# preferences added in images/definitions/minimum.
-			HAIKU_IMAGE_SIZE ?= 600 ;
+			# preferences added in images/definitions/minimum, and larger again
+			# to make room for Sauerbraten, which is injected into the finished
+			# image (inject_sauerbraten.sh) rather than built into it: the game
+			# on its own is 661 MB, of which 259 MB is its 197 maps.
+			HAIKU_IMAGE_SIZE ?= 1500 ;
 
 			# bash provides /bin/sh, needed by the launch_daemon "env
 			# /system/boot/SetupEnvironment" step that the desktop session
