@@ -260,7 +260,17 @@ VMTranslationMap::PageUnmapped(VMArea* area, page_num_t pageNumber,
 	if (!page->IsMapped()) {
 		atomic_add(&gMappedPagesCount, -1);
 
-		if (updatePageQueue) {
+		if (updatePageQueue
+#ifdef __POWERPC__
+				// A ppc teardown can leak a still-mapped page by detaching it
+				// from its cache (VMCache::Delete sets cache_ref = NULL). Such a
+				// page has no cache to consult here; skip the cache-based queue
+				// update rather than dereferencing a NULL cache (which panicked
+				// with an unhandled kernel fault at 0x3c when the lingering
+				// mapping was finally unmapped -- e.g. opening a Terminal).
+			&& page->Cache() != NULL
+#endif
+				) {
 			if (page->Cache()->temporary)
 				vm_page_set_state(page, PAGE_STATE_INACTIVE);
 			else if (page->modified)
