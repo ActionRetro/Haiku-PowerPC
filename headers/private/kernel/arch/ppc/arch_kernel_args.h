@@ -78,6 +78,15 @@ typedef struct {
 	// "kauai-ata", a separate PCI function, not a mac-io cell), resolved from
 	// the OF interrupt-map by the loader. 0 = none/unknown.
 	uint32		kauai_ata_irq;
+	// OpenPIC IRQs of the USB controllers (OHCI/EHCI), resolved from the OF
+	// interrupt-map by the loader; each controller's PCI interrupt_line is an
+	// unrouted placeholder. Keyed by PCI address so each gets its own vector:
+	// address = (bus << 16) | (device << 8) | function.
+	struct {
+		uint32	address;
+		uint32	irq;
+	} usb_irqs[8];
+	uint32		usb_irq_count;
 	// Sound hardware, read from the Open Firmware device tree by the loader
 	// (OF is not callable from the kernel and these offsets are machine
 	// specific). See arch_audio_info.h.

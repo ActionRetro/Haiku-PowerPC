@@ -381,6 +381,9 @@ static uint32 sCardBusIRQ = 0;
 static uint32 sCardBusMemBase = 0;
 static uint32 sKauaiAtaIRQ = 0;
 static uint32 sAirportIRQ = 0;
+static uint32 sUsbIrqAddr[8];
+static uint32 sUsbIrq[8];
+static uint32 sUsbIrqCount = 0;
 static uint8 sGmacMAC[6] = { 0, 0, 0, 0, 0, 0 };
 static bool sGmacMACValid = false;
 
@@ -457,6 +460,17 @@ ppc_get_kauai_ata_irq()
 	return sKauaiAtaIRQ;
 }
 
+extern "C" uint32
+ppc_get_usb_irq(uint8 bus, uint8 device, uint8 function)
+{
+	uint32 address = ((uint32)bus << 16) | ((uint32)device << 8) | function;
+	for (uint32 i = 0; i < sUsbIrqCount; i++) {
+		if (sUsbIrqAddr[i] == address)
+			return sUsbIrq[i];
+	}
+	return 0;
+}
+
 extern "C" bool
 ppc_get_gmac_mac(uint8* address)
 {
@@ -494,6 +508,13 @@ arch_platform_init(struct kernel_args *kernelArgs)
 	sAudioDump = kernelArgs->arch_args.of_audio_dump;
 	sAudioDumpLength = kernelArgs->arch_args.of_audio_dump_len;
 	sAirportIRQ = kernelArgs->arch_args.airport_irq;
+	sUsbIrqCount = kernelArgs->arch_args.usb_irq_count;
+	if (sUsbIrqCount > 8)
+		sUsbIrqCount = 8;
+	for (uint32 i = 0; i < sUsbIrqCount; i++) {
+		sUsbIrqAddr[i] = kernelArgs->arch_args.usb_irqs[i].address;
+		sUsbIrq[i] = kernelArgs->arch_args.usb_irqs[i].irq;
+	}
 	sGmacMACValid = kernelArgs->arch_args.gmac_mac_valid != 0;
 	for (int i = 0; i < 6; i++)
 		sGmacMAC[i] = kernelArgs->arch_args.gmac_mac[i];

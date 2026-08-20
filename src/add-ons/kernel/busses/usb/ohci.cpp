@@ -21,6 +21,13 @@
 #include "ohci.h"
 
 
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+// Provided by the ppc kernel platform (arch_platform.cpp): the OpenPIC IRQ the
+// boot loader resolved for this USB controller from the OF interrupt-map.
+extern "C" uint32 ppc_get_usb_irq(uint8 bus, uint8 device, uint8 function);
+#endif
+
+
 #define CALLED(x...)	TRACE_MODULE("CALLED %s\n", __PRETTY_FUNCTION__)
 
 #define USB_MODULE_NAME "ohci"
@@ -294,7 +301,8 @@ OHCI::OHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
 		fRootHubAddress(0),
 		fPortCount(0),
 		fIRQ(0),
-		fUseMSI(false)
+		fUseMSI(false),
+		fHwInterruptCount(0)
 {
 	if (!fInitOK) {
 		TRACE_ERROR("bus manager failed to init\n");
@@ -548,6 +556,21 @@ OHCI::OHCI(pci_info *info, pci_device_module_info* pci, pci_device* device, Stac
 	fIRQ = fPCIInfo->u.h0.interrupt_line;
 	if (fIRQ == 0xFF)
 		fIRQ = 0;
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+	// On ppc the PCI interrupt_line is an unrouted placeholder, so the hardware
+	// interrupt never fires and completions are driven by the poll thread
+	// below. The boot loader resolved each USB controller's real OpenPIC input
+	// from the OF interrupt-map; prefer it so the hardware interrupt works.
+	{
+		uint32 resolved = ppc_get_usb_irq(fPCIInfo->bus, fPCIInfo->device,
+			fPCIInfo->function);
+		TRACE_ALWAYS("ppc: PCI %d:%d:%d interrupt_line=%u loader_usb_irq=%u\n",
+			fPCIInfo->bus, fPCIInfo->device, fPCIInfo->function,
+			(unsigned)fIRQ, (unsigned)resolved);
+		if (resolved != 0 && resolved < 0xff)
+			fIRQ = resolved;
+	}
+#endif
 
 	if (fPci->get_msi_count(fDevice) >= 1) {
 		uint32 msiVector = 0;
@@ -928,7 +951,12 @@ OHCI::ClearPortFeature(uint8 index, uint16 feature)
 int32
 OHCI::_InterruptHandler(void *data)
 {
-	return ((OHCI *)data)->_Interrupt();
+	OHCI *ohci = (OHCI *)data;
+	// The poll thread calls _Interrupt() directly, so this counter rises only
+	// when the real hardware IRQ fires - a live check that interrupt routing
+	// works (logged periodically by _PollThread).
+	ohci->fHwInterruptCount++;
+	return ohci->_Interrupt();
 }
 
 
@@ -945,8 +973,18 @@ int32
 OHCI::_PollThread(void *data)
 {
 	OHCI *ohci = (OHCI *)data;
+	uint32 iter = 0;
+	// Always poll at 1ms. An earlier adaptive backoff (drop to 50ms once a
+	// hardware interrupt was seen) starved USB when interrupts fire only
+	// intermittently, stalling writes; correctness of USB writes matters more
+	// than the poll's interrupt-off load, so keep the tight interval. The
+	// counter still reports whether the hardware IRQ is firing at all.
 	while (!ohci->fStopPollThread) {
 		snooze(1000);
+		if ((++iter % 5000) == 0) {
+			dprintf("ohci(irq %u): hw interrupts so far = %u\n",
+				(unsigned)ohci->fIRQ, (unsigned)ohci->fHwInterruptCount);
+		}
 		// _Interrupt() grabs a spinlock, which requires interrupts disabled
 		// (it normally runs in interrupt context). Reproduce that here.
 		cpu_status former = disable_interrupts();
