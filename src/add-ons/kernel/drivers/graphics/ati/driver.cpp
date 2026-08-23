@@ -7,6 +7,7 @@
 */
 
 #include <KernelExport.h>
+#include <ByteOrder.h>
 #include <PCI.h>
 #include <drivers/bios.h>
 #include <malloc.h>
@@ -474,6 +475,240 @@ Mach64_GetBiosParameters(DeviceInfo& di, uint8& clockType)
 
 
 
+// ---------------------------------------------------------------------------
+// ppc cycle-1 probe: report what OpenFirmware already programmed.
+//
+// Reads only. Register offsets are duplicated here rather than pulled in from
+// the accelerant's rage128.h, which is accelerant-private; there are six of
+// them and this code is temporary.
+// ---------------------------------------------------------------------------
+
+#define PROBE_CLOCK_CNTL_INDEX	0x0008
+#define PROBE_CLOCK_CNTL_DATA	0x000c
+#define PROBE_CRTC_GEN_CNTL		0x0050
+#define PROBE_CONFIG_MEMSIZE	0x00f8
+#define PROBE_CRTC_H_TOTAL_DISP	0x0200
+#define PROBE_CRTC_V_TOTAL_DISP	0x0208
+#define PROBE_CRTC_PITCH		0x022c
+
+#define PROBE_PPLL_CNTL			0x02
+#define PROBE_PPLL_REF_DIV		0x03
+#define PROBE_PPLL_DIV_0		0x04
+#define PROBE_VCLK_ECP_CNTL		0x08
+
+
+static uint32
+ProbeReadReg(DeviceInfo& di, uint32 offset)
+{
+	// The chip's registers are little-endian; on ppc this compiles to a
+	// byte-reversed load, and to nothing on x86.
+	return B_LENDIAN_TO_HOST_INT32(*((vuint32*)(di.regs + offset)));
+}
+
+
+static uint32
+ProbeReadPLL(DeviceInfo& di, uint8 index)
+{
+	*((vuint8*)(di.regs + PROBE_CLOCK_CNTL_INDEX)) = index & 0x3f;
+	// Order the index write ahead of the data read. Missing this barrier was
+	// the second bug of the NVIDIA port, where reads came back served under
+	// the PREVIOUSLY selected index - a failure that looks like bad data
+	// rather than like a missing barrier.
+	__asm__ volatile("eieio; sync" ::: "memory");
+	return ProbeReadReg(di, PROBE_CLOCK_CNTL_DATA);
+}
+
+
+static void
+Rage128_ProbeOpenFirmwareState(DeviceInfo& di)
+{
+	SharedInfo& si = *(di.sharedInfo);
+
+	dprintf("ati/probe: ---- Rage128 OpenFirmware state ----\n");
+	dprintf("ati/probe: chipType %d  rom_base 0x%" B_PRIx32 " (pci 0x%"
+		B_PRIx32 ") size 0x%" B_PRIx32 "\n", si.chipType,
+		di.pciInfo.u.h0.rom_base, di.pciInfo.u.h0.rom_base_pci,
+		di.pciInfo.u.h0.rom_size);
+	dprintf("ati/probe: PLL params in use: ref_freq %d  ref_div %d  "
+		"min %" B_PRId32 "  max %" B_PRId32 "  xclk %d\n",
+		si.r128PLLParams.reference_freq, si.r128PLLParams.reference_div,
+		si.r128PLLParams.min_pll_freq, si.r128PLLParams.max_pll_freq,
+		si.r128PLLParams.xclk);
+
+	uint32 memSize = ProbeReadReg(di, PROBE_CONFIG_MEMSIZE);
+	uint32 genCntl = ProbeReadReg(di, PROBE_CRTC_GEN_CNTL);
+	uint32 hTotalDisp = ProbeReadReg(di, PROBE_CRTC_H_TOTAL_DISP);
+	uint32 vTotalDisp = ProbeReadReg(di, PROBE_CRTC_V_TOTAL_DISP);
+	uint32 pitch = ProbeReadReg(di, PROBE_CRTC_PITCH);
+
+	dprintf("ati/probe: CONFIG_MEMSIZE 0x%" B_PRIx32 " (%" B_PRIu32 " MB)\n",
+		memSize, memSize / (1024 * 1024));
+	dprintf("ati/probe: CRTC_GEN_CNTL 0x%" B_PRIx32 "  pix_width %"
+		B_PRIu32 "  CRTC_PITCH 0x%" B_PRIx32 "\n",
+		genCntl, (genCntl >> 8) & 0xf, pitch);
+
+	// h_total and h_disp are stored in units of 8 pixels, minus one.
+	// Masks match how rage128_mode.cpp PACKS these: both halves are 16-bit,
+	// and the h_ values are in units of 8 pixels, minus one.
+	uint32 hTotal = ((hTotalDisp & 0xffff) + 1) * 8;
+	uint32 hDisp = (((hTotalDisp >> 16) & 0xffff) + 1) * 8;
+	uint32 vTotal = (vTotalDisp & 0xffff) + 1;
+	uint32 vDisp = ((vTotalDisp >> 16) & 0xffff) + 1;
+
+	dprintf("ati/probe: OF mode %" B_PRIu32 "x%" B_PRIu32
+		"  h_total %" B_PRIu32 "  v_total %" B_PRIu32 "\n",
+		hDisp, vDisp, hTotal, vTotal);
+
+	uint32 pllCntl = ProbeReadPLL(di, PROBE_PPLL_CNTL);
+	uint32 refDivReg = ProbeReadPLL(di, PROBE_PPLL_REF_DIV);
+	uint32 vclkEcp = ProbeReadPLL(di, PROBE_VCLK_ECP_CNTL);
+
+	dprintf("ati/probe: PPLL_CNTL 0x%" B_PRIx32 "  PPLL_REF_DIV 0x%" B_PRIx32
+		"  VCLK_ECP_CNTL 0x%" B_PRIx32 "\n", pllCntl, refDivReg, vclkEcp);
+
+	for (uint8 i = 0; i < 4; i++) {
+		uint32 div = ProbeReadPLL(di, PROBE_PPLL_DIV_0 + i);
+		dprintf("ati/probe: PPLL_DIV_%d 0x%" B_PRIx32 "  fb_div %" B_PRIu32
+			"  post_div %" B_PRIu32 "\n", i, div, div & 0x7ff,
+			(div >> 16) & 0x7);
+	}
+
+	// Solve for the reference frequency. The PLL relationship is
+	//     pixel_clock = ref_freq * fb_div / (ref_div * post_div)
+	// and the CRTC gives the other side of it:
+	//     pixel_clock = h_total * v_total * refresh
+	// so each candidate reference frequency implies a refresh rate, and only
+	// the true one implies a believable display. All arithmetic is integer -
+	// this is kernel context, and the answer only has to identify which of
+	// three candidates is right, not to be exact.
+	uint32 refDiv = refDivReg & 0x3ff;
+	// The CRTC runs off PPLL_DIV_3 - that is the one rage128_mode.cpp
+	// programs (SetPLLReg(R128_PPLL_DIV_3, params.ppll_div_3, ...)).
+	uint32 selectedDiv = ProbeReadPLL(di, PROBE_PPLL_DIV_0 + 3);
+	uint32 fbDiv = selectedDiv & 0x7ff;
+	// From the RAGE 128 VR/GL Register Reference Manual, PLL_DIV_[3:0].
+	// Code 5 is RESERVED - 0 here so a reserved value reads as nonsense in
+	// the log instead of quietly producing a believable wrong answer.
+	static const uint32 kPostDivs[8] = { 1, 2, 4, 8, 3, 0, 6, 12 };
+	uint32 postDiv = kPostDivs[(selectedDiv >> 16) & 0x7];
+
+	dprintf("ati/probe: solving with ref_div %" B_PRIu32 "  fb_div %" B_PRIu32
+		"  post_div %" B_PRIu32 "\n", refDiv, fbDiv, postDiv);
+
+	if (refDiv != 0 && postDiv != 0 && fbDiv != 0
+		&& hTotal != 0 && vTotal != 0) {
+		static const uint32 kCandidates[3] = { 2950, 2863, 1432 };
+		for (int i = 0; i < 3; i++) {
+			// kHz
+			uint32 dotClock = (uint32)(((uint64)kCandidates[i] * 10 * fbDiv)
+				/ ((uint64)refDiv * postDiv));
+			uint32 refresh = (uint32)(((uint64)dotClock * 1000)
+				/ ((uint64)hTotal * vTotal));
+			dprintf("ati/probe:   ref_freq %" B_PRIu32 " -> dot clock %"
+				B_PRIu32 " kHz -> refresh %" B_PRIu32 " Hz%s\n",
+				kCandidates[i], dotClock, refresh,
+				(refresh >= 55 && refresh <= 90) ? "   <== plausible" : "");
+		}
+	} else {
+		dprintf("ati/probe: divisors look wrong; cannot solve\n");
+	}
+
+	// ---- memory clock (xclk) ----------------------------------------
+	// pll.xclk drives the DDA/display-FIFO registers and is a DEFAULT (10300
+	// = 103 MHz) whenever there is no x86 BIOS to read - which is always, on
+	// an Apple card. If it is wrong the FIFO mistimes and the display drops
+	// out as scanout begins. OpenFirmware has already programmed a working
+	// memory clock, so read it back rather than trust the guess.
+	//
+	// PLL index 0x0a is M_SPLL_REF_FB_DIV on the Rage 128:
+	//     [7:0] M_SPLL_REF_DIV   [15:8] MPLL_FB_DIV   [23:16] SPLL_FB_DIV
+	// Raw registers are printed next to the derivation on purpose - a
+	// confidently wrong formula is worth less than the numbers themselves.
+	uint32 spllRefFbDiv = ProbeReadPLL(di, 0x0a);
+	uint32 mclkCntl = ProbeReadPLL(di, 0x0f);
+
+	uint32 mSpllRefDiv = spllRefFbDiv & 0xff;
+	uint32 mpllFbDiv = (spllRefFbDiv >> 8) & 0xff;
+	uint32 spllFbDiv = (spllRefFbDiv >> 16) & 0xff;
+
+	dprintf("ati/probe: M_SPLL_REF_FB_DIV 0x%" B_PRIx32 "  MCLK_CNTL 0x%"
+		B_PRIx32 "\n", spllRefFbDiv, mclkCntl);
+	dprintf("ati/probe:   m_spll_ref_div %" B_PRIu32 "  mpll_fb_div %" B_PRIu32
+		"  spll_fb_div %" B_PRIu32 "\n", mSpllRefDiv, mpllFbDiv, spllFbDiv);
+
+	if (mSpllRefDiv != 0) {
+		// Same units as the rest of the PLL block: 10 kHz. ref_freq 2950 was
+		// confirmed correct for this card in cycle 1.
+		uint32 refFreq = si.r128PLLParams.reference_freq;
+		uint32 xclkA = (2 * refFreq * mpllFbDiv) / mSpllRefDiv;
+		uint32 xclkB = (refFreq * mpllFbDiv) / mSpllRefDiv;
+		uint32 sclk = (2 * refFreq * spllFbDiv) / mSpllRefDiv;
+		dprintf("ati/probe:   xclk candidates: 2x form %" B_PRIu32 " (%"
+			B_PRIu32 " MHz), 1x form %" B_PRIu32 " (%" B_PRIu32 " MHz)\n",
+			xclkA, xclkA / 100, xclkB, xclkB / 100);
+		dprintf("ati/probe:   sclk (2x form) %" B_PRIu32 " (%" B_PRIu32
+			" MHz)\n", sclk, sclk / 100);
+		dprintf("ati/probe:   driver is currently ASSUMING xclk %d (%d MHz)\n",
+			si.r128PLLParams.xclk, si.r128PLLParams.xclk / 100);
+	} else {
+		dprintf("ati/probe:   m_spll_ref_div is 0; cannot derive xclk\n");
+	}
+
+	// ---- do WRITES actually land? ----------------------------------
+	// Never tested before cycle 9. Everything so far has been read-only, and
+	// every conclusion has assumed writes reach the same place reads come
+	// from. R128_OVR_WID_LEFT_RIGHT (0x0234, overscan width) is harmless -
+	// SetRegisters zeroes it in normal operation - and is restored below.
+	{
+		uint32 saved = ProbeReadReg(di, 0x0234);
+		static const uint32 kPatterns[3] = { 0x12345678, 0xa5a5a5a5, 0 };
+		for (int i = 0; i < 3; i++) {
+			*((vuint32*)(di.regs + 0x0234))
+				= B_HOST_TO_LENDIAN_INT32(kPatterns[i]);
+			__asm__ volatile("eieio; sync" ::: "memory");
+			uint32 back = ProbeReadReg(di, 0x0234);
+			dprintf("ati/probe: write32 0x%08" B_PRIx32 " -> read 0x%08"
+				B_PRIx32 " %s\n", kPatterns[i], back,
+				back == kPatterns[i] ? "MATCH" : "*** MISMATCH ***");
+		}
+		*((vuint32*)(di.regs + 0x0234)) = B_HOST_TO_LENDIAN_INT32(saved);
+		__asm__ volatile("eieio; sync" ::: "memory");
+		dprintf("ati/probe: restored OVR_WID_LEFT_RIGHT to 0x%08" B_PRIx32
+			"\n", saved);
+	}
+
+	// The 8-bit path is separate, and is what selects the PLL index - so it
+	// gets its own check. Writing the index port has no side effect; reading
+	// the whole 32-bit register back shows which byte lane the write landed
+	// in, which is the failure the NVIDIA port hit (its ^3 XOR put every
+	// 8-bit access three bytes off).
+	{
+		uint32 before = ProbeReadReg(di, PROBE_CLOCK_CNTL_INDEX);
+		*((vuint8*)(di.regs + PROBE_CLOCK_CNTL_INDEX)) = 0x2a;
+		__asm__ volatile("eieio; sync" ::: "memory");
+		uint32 after = ProbeReadReg(di, PROBE_CLOCK_CNTL_INDEX);
+		dprintf("ati/probe: write8 0x2a to CLOCK_CNTL_INDEX: 0x%08" B_PRIx32
+			" -> 0x%08" B_PRIx32 " (low byte %s)\n", before, after,
+			(after & 0xff) == 0x2a ? "MATCH" : "*** WRONG LANE ***");
+	}
+
+	// OpenFirmware's own CRTC_EXT_CNTL, read before the accelerant exists.
+	// bit 15 (0x8000) is R128_CRTC_CRT_ON - the CRT output enable. After our
+	// modeset it reads clear; whether WE cleared it or it was always clear is
+	// the difference between a cause and a coincidence, and this is the only
+	// place that can tell them apart.
+	{
+		uint32 extCntl = ProbeReadReg(di, 0x0054);
+		dprintf("ati/probe: OF CRTC_EXT_CNTL 0x%" B_PRIx32 "  CRT_ON(bit15)=%d"
+			"  DISPLAY_DIS=%d HSYNC_DIS=%d VSYNC_DIS=%d\n", extCntl,
+			(extCntl & (1 << 15)) ? 1 : 0, (extCntl & (1 << 10)) ? 1 : 0,
+			(extCntl & (1 << 8)) ? 1 : 0, (extCntl & (1 << 9)) ? 1 : 0);
+	}
+
+	dprintf("ati/probe: ---- end ----\n");
+}
+
+
 static status_t
 Rage128_GetBiosParameters(DeviceInfo& di)
 {
@@ -496,6 +731,42 @@ Rage128_GetBiosParameters(DeviceInfo& di)
 	si.panelX = 0;
 	si.panelY = 0;
 	si.panelPowerDelay = 1;
+
+	// Derive the memory clock from what OpenFirmware already programmed,
+	// rather than leaving it at the default above. xclk feeds
+	// CalculateDDARegisters, which times the display FIFO; measured on a real
+	// iMac G3 the default of 10300 (103 MHz) was 26% below the true 130 MHz,
+	// and a FIFO timed against a memory clock a quarter too slow underruns as
+	// scanout begins - a black screen at the moment the desktop appears.
+	//
+	// PLL index 0x0a is M_SPLL_REF_FB_DIV:
+	//     [7:0] M_SPLL_REF_DIV   [15:8] MPLL_FB_DIV   [23:16] SPLL_FB_DIV
+	// Verified against that machine: ref_div 59 (the same divider OF uses for
+	// the pixel PLL, so a clean 0.5 MHz reference) and mpll_fb_div 130 give
+	// exactly 130 MHz, with sclk agreeing - the expected engine clock for a
+	// Rage 128 Pro.
+	{
+		uint32 spllRefFbDiv = ProbeReadPLL(di, 0x0a);
+		uint32 mSpllRefDiv = spllRefFbDiv & 0xff;
+		uint32 mpllFbDiv = (spllRefFbDiv >> 8) & 0xff;
+		if (mSpllRefDiv != 0 && mpllFbDiv != 0) {
+			uint32 derived = (2 * pll.reference_freq * mpllFbDiv)
+				/ mSpllRefDiv;
+			// Sanity band: a Rage 128's memory clock is tens of MHz, not
+			// hundreds. Anything outside it means the registers were not what
+			// this code thinks, so keep the default rather than program the
+			// FIFO from a number that cannot be right.
+			if (derived >= 5000 && derived <= 30000) {
+				dprintf("ati: xclk derived from hardware: %" B_PRIu32
+					" (%" B_PRIu32 " MHz), was assuming %d\n",
+					derived, derived / 100, pll.xclk);
+				pll.xclk = derived;
+			} else {
+				dprintf("ati: derived xclk %" B_PRIu32 " out of range;"
+					" keeping default %d\n", derived, pll.xclk);
+			}
+		}
+	}
 
 	// Map the ROM area.  The Rage128 chips do not assign a ROM address in the
 	// PCI info;  thus, access the ROM via the ISA legacy memory map.
@@ -646,7 +917,9 @@ MapDevice(DeviceInfo& di)
 	if (MACH64_FAMILY(si.chipType) && (regsBase == 0 || regAreaSize == 0)) {
 		uint32 regsOffset = 0x7ff000;	// offset to regs area in video memory
 		addr_t regs = addr_t(si.videoMemAddr) + regsOffset;
-		uint32 chipInfo = *((vuint32*)(regs + M64_CONFIG_CHIP_ID));
+		// ppc: little-endian register, see accelerant.h
+		uint32 chipInfo = B_LENDIAN_TO_HOST_INT32(
+			*((vuint32*)(regs + M64_CONFIG_CHIP_ID)));
 
 		if (si.deviceID != (chipInfo & M64_CFG_CHIP_TYPE)) {
 			// Register area not found;  delete any other areas that were
@@ -855,8 +1128,10 @@ InitDevice(DeviceInfo& di)
 				status = B_UNSUPPORTED;
 			}
 		}
-		else if (RAGE128_FAMILY(si.chipType))
+		else if (RAGE128_FAMILY(si.chipType)) {
 			Rage128_GetBiosParameters(di);
+			Rage128_ProbeOpenFirmwareState(di);
+		}
 	}
 
 	if (status < 0) {
@@ -928,8 +1203,17 @@ init_hardware(void)
 	// Return B_OK if a device supported by this driver is found; otherwise,
 	// return B_ERROR so the driver will be unloaded.
 
-	if (get_module(B_PCI_MODULE_NAME, (module_info**)&gPCI) != B_OK)
+	// ★ ppc bring-up: an unconditional line BEFORE anything can block, so a
+	// silent boot can be told apart from a boot that never got here. The
+	// driver's own TRACE sits after the PCI probe, so a hang in the probe
+	// prints nothing at all - which looks exactly like the driver not running.
+	dprintf("ati/ppc: entered init_hardware\n");
+
+	if (get_module(B_PCI_MODULE_NAME, (module_info**)&gPCI) != B_OK) {
+		dprintf("ati/ppc: no PCI module\n");
 		return B_ERROR;		// unable to access PCI bus
+	}
+	dprintf("ati/ppc: got PCI module, probing\n");
 
 	// Check pci devices for a device supported by this driver.
 
@@ -937,8 +1221,8 @@ init_hardware(void)
 	pci_info pciInfo;
 	const ChipInfo* pDevice = GetNextSupportedDevice(pciIndex, pciInfo);
 
-	TRACE("init_hardware() - %s\n",
-		pDevice == NULL ? "no supported devices" : "device supported");
+	dprintf("ati/ppc: probe done - %s\n",
+		pDevice == NULL ? "no supported device" : pDevice->chipName);
 
 	put_module(B_PCI_MODULE_NAME);		// put away the module manager
 

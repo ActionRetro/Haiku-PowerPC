@@ -110,6 +110,21 @@ IsModeUsable(const display_mode* mode)
 	uint8 bitsPerPixel;
 	uint32 maxPixelClock;
 
+#ifdef __POWERPC__
+	// ppc bring-up: without EDID the driver has no idea what the monitor can
+	// display, and GetEdidFromBIOS() cannot work here - it wants an x86 BIOS,
+	// and Apple cards carry an OpenFirmware FCode ROM. Left to itself the
+	// driver picks 1024x768@60 off a built-in list and programs it blind; on
+	// the iMac G3 that blanks the CRT, with or without the DDA and PLL writes.
+	//
+	// Restrict to what the machine has actually been SEEN to display, so a
+	// modeset can be tested without also gambling on the mode. Diagnostic, not
+	// a fix - the real answer is to read the timing OpenFirmware already
+	// programmed, or fetch EDID over DDC/I2C instead of through a BIOS.
+	if (mode->timing.h_display != 800 || mode->timing.v_display != 600)
+		return false;
+#endif
+
 	if (!gInfo.GetColorSpaceParams(mode->space, bitsPerPixel, maxPixelClock))
 		return false;
 
@@ -371,6 +386,10 @@ GetFrameBufferConfig(frame_buffer_config* pFBC)
 	pFBC->frame_buffer_dma = (void*)((addr_t)si.videoMemPCI + si.frameBufferOffset);
 	uint32 bytesPerPixel = (si.displayMode.bitsPerPixel + 7) / 8;
 	pFBC->bytes_per_row = si.displayMode.virtual_width * bytesPerPixel;
+	TRACE("app_server fb: %dx%d virtual %dx%d  %d bpp  bytes_per_row %d\n",
+		si.displayMode.timing.h_display, si.displayMode.timing.v_display,
+		si.displayMode.virtual_width, si.displayMode.virtual_height,
+		bytesPerPixel * 8, (int)pFBC->bytes_per_row);
 
 	return B_OK;
 }

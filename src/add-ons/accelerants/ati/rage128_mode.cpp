@@ -152,6 +152,42 @@ CalculateDDARegisters(const DisplayModeEx& mode, DisplayParams& params)
 	int vClkFreq = DivideWithRounding(pll.reference_freq * params.feedback_div,
 		pll.reference_div * params.post_div);
 
+#ifdef __POWERPC__
+	// Use the clock actually in force, not the one we intended. On ppc the PLL
+	// is deliberately left as OpenFirmware programmed it (its raster is the
+	// only one this CRT will lock to), so timing the display FIFO from the
+	// mode's divisors fetches data for the wrong fraction of each line and the
+	// CRTC repeats what it has - measured at 39.789/62.375 = 0.638 of the
+	// line, matching the duplication seen on the iMac exactly.
+	//
+	// PLL_DIV_SEL still holds OpenFirmware's choice (DIV_0 here) because the
+	// write path that would set it to DIV_3 is skipped, so read the selector
+	// rather than assume.
+	{
+		uint32 divSel = (INREG(R128_CLOCK_CNTL_INDEX) >> 8) & 0x3;
+		uint32 refDiv = GetPLLReg(R128_PPLL_REF_DIV) & R128_PPLL_REF_DIV_MASK;
+		// Only R128_PPLL_DIV_3 (index 0x07) is in the header; the four
+		// dividers are 0x04..0x07, so DIV_0 is DIV_3 - 3.
+		uint32 div = GetPLLReg((R128_PPLL_DIV_3 - 3) + divSel);
+		uint32 fbDiv = div & 0x7ff;
+		static const uint32 kPostDivs[8] = { 1, 2, 4, 8, 3, 0, 6, 12 };
+		uint32 postDiv = kPostDivs[(div >> 16) & 0x7];
+
+		if (refDiv != 0 && fbDiv != 0 && postDiv != 0) {
+			int live = DivideWithRounding(pll.reference_freq * fbDiv,
+				refDiv * postDiv);
+			TRACE("ppc: DDA vClkFreq %d -> %d (live PLL: sel %u ref_div %u"
+				" fb_div %u post_div %u)\n", vClkFreq, live, divSel, refDiv,
+				fbDiv, postDiv);
+			vClkFreq = live;
+		} else {
+			TRACE("ppc: live PLL divisors look wrong (sel %u ref %u fb %u"
+				" post %u); keeping computed vClkFreq %d\n", divSel, refDiv,
+				fbDiv, postDiv, vClkFreq);
+		}
+	}
+#endif
+
 	int bytesPerPixel = (mode.bitsPerPixel + 7) / 8;
 
 	int xClksPerTransfer = DivideWithRounding(xClkFreq * displayFifoWidth,
@@ -249,8 +285,15 @@ CalculatePLLRegisters(const DisplayModeEx& mode, DisplayParams& params)
 static void
 PLLWaitForReadUpdateComplete()
 {
-	while (GetPLLReg(R128_PPLL_REF_DIV) & R128_PPLL_ATOMIC_UPDATE_R)
-		;
+	// ppc bring-up: bounded. This waits on the PLL through an index/data
+	// register pair, which is exactly the access pattern that needed an
+	// explicit barrier on the NVIDIA port - so it is a plausible hang.
+	for (int i = 0; i < 1000000; i++) {
+		if (!(GetPLLReg(R128_PPLL_REF_DIV) & R128_PPLL_ATOMIC_UPDATE_R))
+			break;
+		if (i == 999999)
+			TRACE("PLL atomic update TIMED OUT\n");
+	}
 }
 
 static void
@@ -262,8 +305,46 @@ PLLWriteUpdate()
 }
 
 
+#ifdef __POWERPC__
+#include <stdio.h>
+
+// ppc bring-up bisect. Which register group blanks the iMac's CRT? The driver
+// runs one stage per boot and rotates, so the whole bisect costs one flash and
+// two reboots rather than three build-flash-readback rounds.
+//
+//   1  CRTC only          2  CRTC + DDA          3  everything
+//
+// In stages 1 and 2 the pixel clock stays as OpenFirmware left it, which puts
+// 1024x768 at ~57.6 Hz - odd, but well inside a CRT's range.
+static int
+ppc_bisect_stage(void)
+{
+	static int sStage = -1;
+	if (sStage >= 0)
+		return sStage;
+
+	// Default to the FULL modeset now that the bisect has done its job -
+	// stages 1 and 2 showed a picture on the iMac and stage 3 did not, which
+	// is what identified the PLL. The gates stay, still overridable through
+	// /boot/home/ati_stage, because they cost nothing and have earned it.
+	sStage = 3;
+	FILE* f = fopen("/boot/home/ati_stage", "r");
+	if (f != NULL) {
+		if (fscanf(f, "%d", &sStage) != 1 || sStage < 1 || sStage > 3)
+			sStage = 1;
+		fclose(f);
+	}
+
+	// No longer rotates: the bisect is finished, so every boot runs the stage
+	// asked for and repeats are directly comparable.
+	TRACE("ppc: modeset stage %d (1=CRTC only, 2=+DDA, 3=full)\n", sStage);
+	return sStage;
+}
+#endif	// __POWERPC__
+
 static void
-SetRegisters(DisplayParams& params)
+SetRegisters(DisplayParams& params,
+	const DisplayModeEx& mode)
 {
 	// Write the common registers (most will be set to zero).
 	//-------------------------------------------------------
@@ -294,8 +375,15 @@ SetRegisters(DisplayParams& params)
 	// Write the DDA registers.
 	//-------------------------
 
+#ifdef __POWERPC__
+	if (ppc_bisect_stage() >= 2) {
+#endif
 	OUTREG(R128_DDA_CONFIG, params.dda_config);
 	OUTREG(R128_DDA_ON_OFF, params.dda_on_off);
+#ifdef __POWERPC__
+	} else
+		TRACE("ppc bisect: DDA writes SKIPPED\n");
+#endif
 
 	// Write the CRTC registers.
 	//--------------------------
@@ -305,16 +393,67 @@ SetRegisters(DisplayParams& params)
 	OUTREGM(R128_DAC_CNTL, R128_DAC_MASK_ALL | R128_DAC_8BIT_EN,
 			~(R128_DAC_RANGE_CNTL | R128_DAC_BLANKING));
 
+#ifdef __POWERPC__
+	// KEEP OF RASTER. OpenFirmware drives this CRT at 800x600 with h_total
+	// 1040 / v_total 632 and a 62.375 MHz dot clock - about 95 Hz. Our
+	// computed 800x600@60 (1056/628, 39.8 MHz) is textbook, and blanks it.
+	// Apple CRTs of this era ran 75/95/117 Hz and many will not lock at 60.
+	//
+	// So leave the raster alone and change only what a depth change requires.
+	// app_server is already asking for 800x600, the size OF is displaying, so
+	// if refresh is the problem the picture should simply appear.
+	TRACE("ppc: KEEPING OF raster - CRTC timing and PLL not written\n");
+	TRACE("ppc: (would have written h 0x%08x v 0x%08x)\n",
+		params.crtc_h_total_disp, params.crtc_v_total_disp);
+#else
 	OUTREG(R128_CRTC_H_TOTAL_DISP, params.crtc_h_total_disp);
 	OUTREG(R128_CRTC_H_SYNC_STRT_WID, params.crtc_h_sync_strt_wid);
 	OUTREG(R128_CRTC_V_TOTAL_DISP, params.crtc_v_total_disp);
 	OUTREG(R128_CRTC_V_SYNC_STRT_WID, params.crtc_v_sync_strt_wid);
+#endif
 	OUTREG(R128_CRTC_OFFSET, 0);
 	OUTREG(R128_CRTC_OFFSET_CNTL, 0);
+#ifdef __POWERPC__
+	// pitch scaled by pixel size. h_display>>3 is depth-independent, which is
+	// only right if CRTC_PITCH counts 8-PIXEL units. OF's 8bpp value cannot
+	// tell the two readings apart; at 16bpp they differ by the exact factor of
+	// two that the duplicated line implies.
+	{
+		uint32 bytesPerPixel = (mode.bitsPerPixel + 7) / 8;
+		// NOT scaled. Cycle 14 tried x2 and got exactly 2x vertical
+		// compression with unwritten VRAM below the image, so the field is
+		// in 8-PIXEL units and the driver's h_display>>3 was right all along:
+		// 100 -> 800 px -> 1600 bytes, which is app_server's bytes_per_row.
+		TRACE("ppc: CRTC_PITCH %u (= %u bytes/line at %d bpp)\n",
+			params.crtc_pitch, params.crtc_pitch * 8 * bytesPerPixel,
+			mode.bitsPerPixel);
+		OUTREG(R128_CRTC_PITCH, params.crtc_pitch);
+	}
+#else
 	OUTREG(R128_CRTC_PITCH, params.crtc_pitch);
+#endif
 
 	// Write the PLL registers.
 	//-------------------------
+
+#ifdef __POWERPC__
+	// KEEP OF RASTER: the pixel clock stays exactly as OpenFirmware set it.
+	TRACE("ppc: PLL not written - keeping OF's pixel clock\n");
+	snooze(50000);
+	TRACE("VERIFY-END: CRTC_GEN_CNTL    0x%08x\n", INREG(R128_CRTC_GEN_CNTL));
+	TRACE("VERIFY-END: CRTC_PITCH       0x%08x\n", INREG(R128_CRTC_PITCH));
+	TRACE("VERIFY-END: CRTC_OFFSET      0x%08x\n", INREG(R128_CRTC_OFFSET));
+	TRACE("VERIFY-END: CRTC_H_TOTAL_DISP 0x%08x  V 0x%08x\n",
+		INREG(R128_CRTC_H_TOTAL_DISP), INREG(R128_CRTC_V_TOTAL_DISP));
+	TRACE("VERIFY-END: DDA_CONFIG       0x%08x  ON_OFF 0x%08x\n",
+		INREG(R128_DDA_CONFIG), INREG(R128_DDA_ON_OFF));
+	return;
+	if (ppc_bisect_stage() < 3) {
+		TRACE("ppc bisect: PLL writes SKIPPED (keeping OpenFirmware's"
+			" pixel clock)\n");
+		return;
+	}
+#endif
 
 	OUTREGM(R128_CLOCK_CNTL_INDEX, R128_PLL_DIV_SEL, R128_PLL_DIV_SEL);
 
@@ -345,6 +484,43 @@ SetRegisters(DisplayParams& params)
 
 	SetPLLReg(R128_VCLK_ECP_CNTL, R128_VCLK_SRC_SEL_PPLLCLK,
 				R128_VCLK_SRC_SEL_MASK);
+
+	// Switch the CRT output on. Measured on a real iMac G3: at the end of an
+	// otherwise perfect modeset - PLL locked, reset released, VCLK on the
+	// PLL, timing exact - CRTC_EXT_CNTL read 0x00200000, with CRT_ON (bit 15)
+	// CLEAR. A CRTC programmed correctly into an output that is switched off
+	// is a black screen, which is the symptom.
+	//
+	// Nothing in this driver has ever set that bit, because on x86 the VGA
+	// BIOS sets it at POST and the driver inherits it. Apple cards carry an
+	// OpenFirmware FCode ROM and no VGA BIOS, so nobody sets it here. The
+	// reference drivers do not inherit it either - aty128fb and XFree86's r128
+	// both program CRTC_EXT_CNTL explicitly.
+	//
+	// Masked so only this bit moves; the DPMS code owns the DIS bits.
+	OUTREGM(R128_CRTC_EXT_CNTL, R128_CRTC_CRT_ON, R128_CRTC_CRT_ON);
+	TRACE("VERIFY-END: CRT_ON set, CRTC_EXT_CNTL now 0x%08x\n",
+		INREG(R128_CRTC_EXT_CNTL));
+
+	// ---- the measurement that actually means something -----------------
+	// Taken AFTER the reset release and the VCLK switch above. Cycle 10 read
+	// these mid-sequence, where PPLL_RESET asserted and VCLK on CPUCLK are
+	// both normal, and drew a false conclusion from it.
+	snooze(50000);
+	TRACE("VERIFY-END: PPLL_CNTL        0x%08x  (bit0 PPLL_RESET must be 0)\n",
+		GetPLLReg(R128_PPLL_CNTL));
+	TRACE("VERIFY-END: VCLK_ECP_CNTL    0x%08x  (src must be PPLL, OF had 3)\n",
+		GetPLLReg(R128_VCLK_ECP_CNTL));
+	TRACE("VERIFY-END: PPLL_REF_DIV     0x%08x\n",
+		GetPLLReg(R128_PPLL_REF_DIV));
+	TRACE("VERIFY-END: PPLL_DIV_3       0x%08x\n",
+		GetPLLReg(R128_PPLL_DIV_3));
+	TRACE("VERIFY-END: CRTC_GEN_CNTL    0x%08x\n", INREG(R128_CRTC_GEN_CNTL));
+	TRACE("VERIFY-END: CRTC_EXT_CNTL    0x%08x\n", INREG(0x0054));
+	TRACE("VERIFY-END: DAC_CNTL         0x%08x\n", INREG(R128_DAC_CNTL));
+	TRACE("VERIFY-END: GEN_RESET_CNTL   0x%08x\n", INREG(0x00f0));
+	TRACE("VERIFY-END: CRTC_H_TOTAL_DISP 0x%08x  V 0x%08x\n",
+		INREG(R128_CRTC_H_TOTAL_DISP), INREG(R128_CRTC_V_TOTAL_DISP));
 }
 
 
@@ -370,7 +546,42 @@ Rage128_SetDisplayMode(const DisplayModeEx& mode)
 		if ( ! CalculateDDARegisters(mode, params))
 			return B_BAD_VALUE;
 
-		SetRegisters(params);
+#if 0	// ppc DRY RUN off for cycle 10 (real modeset)	// ppc DRY RUN back ON
+		// ppc bring-up DRY RUN. Cycle 2 blanked the iMac's CRT inside
+		// SetRegisters() and took the whole hardware trip with it - no
+		// picture, no clean shutdown, no syslog, no data at all. So compute
+		// and REPORT everything, write nothing, and leave the CRTC exactly as
+		// OpenFirmware set it. Returning here also skips the palette reload
+		// and Rage128_EngineInit(), so nothing downstream can touch the
+		// display either.
+		//
+		// app_server will believe the mode changed while the hardware did not,
+		// so the picture will be GARBLED - wrong stride and depth. That is
+		// intended: garbled survives to a clean shutdown and hands over the
+		// log, blank does not.
+		TRACE("DRY RUN (ppc): computed but NOT written -\n");
+		TRACE("  requested %dx%d  %d bpp  pixel clock %d kHz\n",
+			mode.timing.h_display, mode.timing.v_display, mode.bitsPerPixel,
+			mode.timing.pixel_clock);
+		TRACE("  crtc_gen_cntl        0x%08x\n", params.crtc_gen_cntl);
+		TRACE("  crtc_h_total_disp    0x%08x\n", params.crtc_h_total_disp);
+		TRACE("  crtc_h_sync_strt_wid 0x%08x\n", params.crtc_h_sync_strt_wid);
+		TRACE("  crtc_v_total_disp    0x%08x\n", params.crtc_v_total_disp);
+		TRACE("  crtc_v_sync_strt_wid 0x%08x\n", params.crtc_v_sync_strt_wid);
+		TRACE("  crtc_pitch           0x%08x\n", params.crtc_pitch);
+		TRACE("  dda_config           0x%08x\n", params.dda_config);
+		TRACE("  dda_on_off           0x%08x\n", params.dda_on_off);
+		TRACE("  ppll_ref_div         0x%08x\n", params.ppll_ref_div);
+		TRACE("  ppll_div_3           0x%08x  (fb_div %d  post_code %d)\n",
+			params.ppll_div_3, (int)(params.ppll_div_3 & 0x7ff),
+			(int)((params.ppll_div_3 >> 16) & 0x7));
+		TRACE("  feedback_div %d  post_div %d\n", params.feedback_div,
+			params.post_div);
+		TRACE("DRY RUN (ppc): CRTC left as OpenFirmware set it\n");
+		return B_OK;
+#endif
+
+		SetRegisters(params, mode);
 
 	} else {
 		// Chip is connected to a laptop LCD monitor; or via a DVI interface.
@@ -397,7 +608,13 @@ Rage128_SetDisplayMode(const DisplayModeEx& mode)
 	for (int i = 0; i < 256; i++)
 		OUTREG(R128_PALETTE_DATA, (i << 16) | (i << 8) | i );
 
+#ifdef __POWERPC__
+	// EngineInit skipped: nothing uses the 2D engine on ppc (see hooks.cpp),
+	// and initialising it is itself a suspect for the VRAM corruption.
+	TRACE("ppc: Rage128_EngineInit skipped - 2D acceleration is off\n");
+#else
 	Rage128_EngineInit(mode);
+#endif
 
 	return B_OK;
 }

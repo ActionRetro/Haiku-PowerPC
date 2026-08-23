@@ -120,7 +120,18 @@ Rage128_EngineInit(const DisplayModeEx& mode)
 	OUTREG(R128_DP_WRITE_MASK, 0xffffffff);
 
 	gInfo.WaitForFifo(1);
+	// The 2D engine's byte-order bit. Haiku hardcoded the x86 branch and
+	// always CLEARED it; XFree86's r128 driver SETS it on a big-endian host
+	// (r128_accel.c, #if X_BYTE_ORDER == X_BIG_ENDIAN). With it clear, every
+	// blit the engine performs is byte-swapped against what app_server wrote -
+	// which is what scribbling garbage into VRAM looks like. Direct analogue
+	// of the NVIDIA ENDIAN_MODE bit, which was the entire 2D story there.
+#ifdef __POWERPC__
+	OUTREGM(R128_DP_DATATYPE, R128_HOST_BIG_ENDIAN_EN, R128_HOST_BIG_ENDIAN_EN);
+	TRACE("ppc: 2D engine HOST_BIG_ENDIAN_EN set\n");
+#else
 	OUTREGM(R128_DP_DATATYPE, 0, R128_HOST_BIG_ENDIAN_EN);
+#endif
 
 	gInfo.WaitForIdle();
 }

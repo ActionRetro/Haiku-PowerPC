@@ -1,5 +1,10 @@
 SubDir HAIKU_TOP src add-ons kernel drivers graphics ati ;
 
+# ppc bring-up: the driver's own TRACE output, so a boot that stalls says
+# whether init_hardware ran and what it found on the PCI bus.
+SubDirCcFlags -DENABLE_DEBUG_TRACE ;
+SubDirC++Flags -DENABLE_DEBUG_TRACE ;
+
 UsePrivateHeaders [ FDirName graphics ati ] ;
 UsePrivateHeaders [ FDirName graphics common ] ;
 UsePrivateHeaders graphics kernel ;

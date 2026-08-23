@@ -27,6 +27,8 @@ InitCommon(int fileDesc)
 
 	// Get area ID of shared data from driver.
 
+	TRACE("InitCommon(): asking the driver for its shared area\n");
+
 	area_id sharedArea;
 	status_t result = ioctl(gInfo.deviceFileDesc, ATI_GET_SHARED_DATA,
 		&sharedArea, sizeof(sharedArea));
@@ -46,6 +48,9 @@ InitCommon(int fileDesc)
 	}
 
 	// Set pointers to various device specific functions.
+
+	TRACE("InitCommon(): areas cloned, chipType %d\n",
+		gInfo.sharedInfo->chipType);
 
 	if (RAGE128_FAMILY(gInfo.sharedInfo->chipType))
 		Rage128_SetFunctionPointers();
@@ -92,7 +97,9 @@ InitAccelerant(int fileDesc)
 		if (si.bAccelerantInUse) {
 			result = B_NOT_ALLOWED;
 		} else {
+			TRACE("InitAccelerant(): calling ChipInit()\n");
 			result = gInfo.ChipInit();	// perform init related to current chip
+			TRACE("InitAccelerant(): ChipInit() returned 0x%X\n", result);
 			if (result == B_OK) {
 				result = si.engineLock.Init("ATI engine lock");
 				if (result == B_OK) {

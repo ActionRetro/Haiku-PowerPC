@@ -1,6 +1,14 @@
 SubDir HAIKU_TOP src add-ons accelerants ati ;
 
 UsePrivateHeaders graphics ;
+
+# ppc bring-up: route the accelerant's TRACE calls to the syslog. The
+# accelerant runs inside app_server and PowerMacs have no serial port, so
+# without this its entire init path is invisible.
+if $(TARGET_ARCH) = ppc {
+	SubDirC++Flags -DENABLE_DEBUG_TRACE ;
+}
+
 UsePrivateHeaders [ FDirName graphics ati ] ;
 UsePrivateHeaders [ FDirName graphics common ] ;
 

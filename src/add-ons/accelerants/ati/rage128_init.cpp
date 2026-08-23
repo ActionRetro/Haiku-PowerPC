@@ -65,7 +65,7 @@ WaitForFifo(uint32 entries)
 	// The FIFO has 64 slots.  This routines waits until at least `entries'
 	// of these slots are empty.
 
-	while (true) {
+	for (int retry = 0; retry < 8; retry++) {		// ppc: was while (true)
 		for (int i = 0; i < R128_TIMEOUT; i++) {
 			uint32 slots = INREG(R128_GUI_STAT) & R128_GUI_FIFOCNT_MASK;
 			if (slots >= entries)
@@ -92,7 +92,7 @@ WaitForIdle()
 
 	WaitForFifo(64);
 
-	while (true) {
+	for (int retry = 0; retry < 8; retry++) {		// ppc: was while (true)
 		for (uint32 i = 0; i < R128_TIMEOUT; i++) {
 			if ( ! (INREG(R128_GUI_STAT) & R128_GUI_ACTIVE)) {
 				Rage128_EngineFlush();
@@ -181,8 +181,18 @@ Rage128_Init(void)
 	si.colorSpaces[0] = B_CMAP8;
 	si.colorSpaces[1] = B_RGB15;
 	si.colorSpaces[2] = B_RGB16;
+#ifdef __POWERPC__
+	// No 32bpp on ppc yet. HWInterface::_CopyToFront byte-reverses every
+	// B_RGB32 pixel under a plain #ifdef __POWERPC__ - right for the NVIDIA
+	// aperture, wrong for this chip's plain VRAM, and with 16 MB on the iMac
+	// app_server would pick 32bpp and hit it. 16bpp is the path already proven
+	// correct on this driver. Lift this once _CopyToFront keys off
+	// B_RGB32_BIG instead of the CPU.
+	si.colorSpaceCount = 3;
+#else
 	si.colorSpaces[3] = B_RGB32;
 	si.colorSpaceCount = 4;
+#endif
 
 	// Setup the mode list.
 

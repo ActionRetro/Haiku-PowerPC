@@ -218,8 +218,18 @@ Mach64_Init(void)
 	si.colorSpaces[0] = B_CMAP8;
 	si.colorSpaces[1] = B_RGB15;
 	si.colorSpaces[2] = B_RGB16;
+#ifdef __POWERPC__
+	// No 32bpp on ppc yet. HWInterface::_CopyToFront byte-reverses every
+	// B_RGB32 pixel under a plain #ifdef __POWERPC__ - right for the NVIDIA
+	// aperture, wrong for this chip's plain VRAM, and with 16 MB on the iMac
+	// app_server would pick 32bpp and hit it. 16bpp is the path already proven
+	// correct on this driver. Lift this once _CopyToFront keys off
+	// B_RGB32_BIG instead of the CPU.
+	si.colorSpaceCount = 3;
+#else
 	si.colorSpaces[3] = B_RGB32;
 	si.colorSpaceCount = 4;
+#endif
 
 	// Setup the mode list.
 
@@ -233,7 +243,14 @@ Mach64_WaitForFifo(uint32 entries)
 	// The FIFO has 16 slots.  This routines waits until at least `entries'
 	// of these slots are empty.
 
-	while ((INREG(FIFO_STAT) & 0xffff) > (0x8000ul >> entries)) ;
+	// ppc bring-up: bounded. An unbounded spin here hangs app_server with
+	// no diagnosis if the chip never drains its FIFO.
+	for (int i = 0; i < 1000000; i++) {
+		if ((INREG(FIFO_STAT) & 0xffff) <= (0x8000ul >> entries))
+			return;
+	}
+	TRACE("Mach64_WaitForFifo(%d) TIMED OUT, FIFO_STAT 0x%08x\n",
+		entries, INREG(FIFO_STAT));
 }
 
 
@@ -246,7 +263,12 @@ Mach64_WaitForIdle()
 
 	Mach64_WaitForFifo(16);
 
-	while (INREG(GUI_STAT) & ENGINE_BUSY) ;
+	// ppc bring-up: bounded, see Mach64_WaitForFifo above.
+	for (int i = 0; i < 1000000; i++) {
+		if (!(INREG(GUI_STAT) & ENGINE_BUSY))
+			return;
+	}
+	TRACE("Mach64_WaitForIdle TIMED OUT, GUI_STAT 0x%08x\n", INREG(GUI_STAT));
 }
 
 

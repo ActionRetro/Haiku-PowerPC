@@ -728,6 +728,17 @@ static status_t
 battery_open(const char* name, uint32 flags, void** cookie)
 {
 	(void)name; (void)flags;
+
+	// Refuse when no battery has ever been seen. The device is published on
+	// every PMU machine, but a desktop (iMac G3) has a PMU and no battery, so
+	// pmu_read_battery() never matches a record and sBatValid stays false.
+	// PowerStatus then hangs on it, which wedges Deskbar and starves every
+	// first-login script behind default_deskbar_items.sh. Telling the applet
+	// there is no battery is both the honest answer and the one that does not
+	// block.
+	if (!sBatValid)
+		return B_DEV_NO_MEDIA;
+
 	*cookie = NULL;
 	return B_OK;
 }

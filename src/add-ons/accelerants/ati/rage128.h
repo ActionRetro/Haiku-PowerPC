@@ -276,11 +276,15 @@
 // Functions to get/set PLL registers.
 //=======================================
 
+
 static inline uint32
 GetPLLReg(uint8 index)
 {
 	OUTREG8(R128_CLOCK_CNTL_INDEX, index & 0x3f);
-	return INREG(R128_CLOCK_CNTL_DATA);
+	ATI_IO_BARRIER();
+	uint32 value = INREG(R128_CLOCK_CNTL_DATA);
+	ATI_IO_BARRIER();
+	return value;
 }
 
 
@@ -288,7 +292,9 @@ static inline void
 SetPLLReg(uint8 index, uint32 value)
 {
 	OUTREG8(R128_CLOCK_CNTL_INDEX, ((index) & 0x3f) | R128_PLL_WR_EN);
+	ATI_IO_BARRIER();
 	OUTREG(R128_CLOCK_CNTL_DATA, value);
+	ATI_IO_BARRIER();
 }
 
 

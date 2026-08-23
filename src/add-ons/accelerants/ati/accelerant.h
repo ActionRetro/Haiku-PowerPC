@@ -233,13 +233,40 @@ void	 Rage128_SetFunctionPointers(void);
 // Macros for memory mapped I/O for both Mach64 and Rage128 chips.
 //================================================================
 
+// ppc: the chip's registers are little-endian, so a raw dereference on a
+// big-endian host reads and writes them byte-reversed. The B_*_ENDIAN macros
+// compile to nothing on x86 and to a byte-reversed load/store on PowerPC, so
+// putting the swap here fixes every register access in the driver at once.
+// (8-bit accesses need no swap.)
 #define INREG8(addr)		*((vuint8*)(gInfo.regs + addr))
-#define INREG16(addr)		*((vuint16*)(gInfo.regs + addr))
-#define INREG(addr)			*((vuint32*)(gInfo.regs + addr))
+#define INREG16(addr)		B_LENDIAN_TO_HOST_INT16( \
+								*((vuint16*)(gInfo.regs + addr)))
+#define INREG(addr)			B_LENDIAN_TO_HOST_INT32( \
+								*((vuint32*)(gInfo.regs + addr)))
 
 #define OUTREG8(addr, val)	*((vuint8*)(gInfo.regs + addr)) = val
-#define OUTREG16(addr, val)	*((vuint16*)(gInfo.regs + addr)) = val
-#define OUTREG(addr, val)	*((vuint32*)(gInfo.regs + addr)) = val
+#define OUTREG16(addr, val)	*((vuint16*)(gInfo.regs + addr)) \
+								= B_HOST_TO_LENDIAN_INT16(val)
+#define OUTREG(addr, val)	*((vuint32*)(gInfo.regs + addr)) \
+								= B_HOST_TO_LENDIAN_INT32(val)
+
+// ppc: order the index write ahead of the data access. PowerPC does not order
+// accesses to cache-inhibited storage on its own, so without eieio the data
+// port can be serviced under the PREVIOUSLY selected index - reads come back
+// from the wrong register, and since the masked SetPLLReg is a
+// read-modify-write, that writes garbage into the PLL. Measured on a real
+// iMac G3: with the barrier the PLL reads back correctly; without it the
+// display goes black the moment the PLL is programmed.
+//
+// Compiles to nothing off PowerPC. An emulator cannot reproduce this - it has
+// no weakly-ordered I/O to get wrong - so passing under dingusppc proves
+// nothing here.
+#ifdef __POWERPC__
+#	define ATI_IO_BARRIER()	__asm__ volatile("eieio; sync" ::: "memory")
+#else
+#	define ATI_IO_BARRIER()	do {} while (0)
+#endif
+
 
 // Write a value to an 32-bit reg using a mask.  The mask selects the
 // bits to be modified.

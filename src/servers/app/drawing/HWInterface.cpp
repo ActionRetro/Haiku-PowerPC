@@ -745,13 +745,19 @@ HWInterface::_CopyToFront(uint8* src, uint32 srcBPR, int32 x, int32 y,
 			dst += y * dstBPR + x * 2;
 			int32 left = x;
 			// copy
-			// TODO: assumes BGR order, does this work on big endian as well?
+			// B_RGB16 is a LITTLE-ENDIAN colour space, so the packed 565 value
+			// has to reach memory low byte first whatever the host is. Building
+			// it in a uint16 and storing it natively is only correct on a
+			// little-endian host; on ppc it wrote [hi][lo] and every pixel came
+			// out byte-swapped. B_HOST_TO_LENDIAN_INT16 compiles to nothing on
+			// x86 and to a byte-reversed store (sthbrx) on ppc.
 			for (; y <= bottom; y++) {
 				uint8* srcHandle = src;
 				uint16* dstHandle = (uint16*)dst;
 				for (x = left; x <= right; x++) {
-					*dstHandle = (uint16)(((srcHandle[2] & 0xf8) << 8)
-						| ((srcHandle[1] & 0xfc) << 3) | (srcHandle[0] >> 3));
+					*dstHandle = B_HOST_TO_LENDIAN_INT16((uint16)(
+						((srcHandle[2] & 0xf8) << 8)
+						| ((srcHandle[1] & 0xfc) << 3) | (srcHandle[0] >> 3)));
 					dstHandle ++;
 					srcHandle += 4;
 				}
@@ -761,6 +767,13 @@ HWInterface::_CopyToFront(uint8* src, uint32 srcBPR, int32 x, int32 y,
 			break;
 		}
 
+		// NOTE: B_RGB15 below is left host-endian on purpose. Haiku defines it
+		// little-endian as well, but the Mach64 reads 555 BIG-endian (see
+		// dingusppc convert_frame_15bpp<BE> vs convert_frame_16bpp<LE>), and the
+		// OpenFirmware framebuffer every other ppc machine uses is depth 15 and
+		// renders correctly as it stands. Fixing it honestly means reporting
+		// B_RGB15_BIG and handling the _BIG spaces here; that is a wider change
+		// than this one and needs its own verification.
 		case B_RGB15:
 		case B_RGBA15:
 		{

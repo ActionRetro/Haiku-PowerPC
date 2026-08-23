@@ -89,11 +89,46 @@ get_accelerant_hook(uint32 feature, void* data)
 
 		// 2D acceleration
 		case B_SCREEN_TO_SCREEN_BLIT:
+#ifdef __POWERPC__
+			// Withheld on ppc: the accelerated blit does not move pixels on
+			// the iMac G3's Rage 128, so dragging a window leaves its area
+			// blank and only the damage under the cursor is repainted. Fills
+			// and spans are correct - the desktop renders properly - so only
+			// this op falls back to software.
+			//
+			// To fix later: Rage128_ScreenToScreenBlit uses
+			// R128_GMC_SRC_DATATYPE_COLOR | R128_ROP3_S with DP_CNTL
+			// direction bits. First suspect is the pitch/offset the ENGINE
+			// uses: the ppc modeset keeps OpenFirmware's raster while
+			// programming its own CRTC_PITCH, so the engine's view of the
+			// framebuffer may not match the CRTC's. Second is the
+			// left-to-right / top-to-bottom handling for overlapping copies.
+			return (void*)0;
+#else
 			return (void*)(gInfo.ScreenToScreenBlit);
+#endif
 		case B_FILL_RECTANGLE:
 			return (void*)(gInfo.FillRectangle);
 		case B_INVERT_RECTANGLE:
+#ifdef __POWERPC__
+			// Withheld on ppc: accelerated invert produces no visible drag
+			// outline on the iMac G3 ("invisible dragging"), the same symptom
+			// the NVIDIA bring-up hit. Haiku draws those outlines with an XOR
+			// raster op; fills and blits use plain GXcopy and are correct, so
+			// only this one operation falls back to software - a handful of
+			// thin rectangles, so the cost is negligible and the rest of the
+			// acceleration is kept.
+			//
+			// To fix properly later: check Rage128_InvertRectangle's
+			// DP_GUI_MASTER_CNTL ROP setup (R128_ROP3_Dn) against what the
+			// engine actually accepts. dingusppc's Mach64 model implements
+			// only frgd_mix == 7 / bkgd_mix == 3 and logs "unimplemented
+			// rectangle fill op" for everything else, which is the same
+			// mechanism seen from the emulator side.
+			return (void*)0;
+#else
 			return (void*)(gInfo.InvertRectangle);
+#endif
 		case B_FILL_SPAN:
 			return (void*)(gInfo.FillSpan);
 

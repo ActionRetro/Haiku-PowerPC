@@ -323,6 +323,7 @@ SYSTEM_NETWORK_PROTOCOLS =
 SYSTEM_ADD_ONS_ACCELERANTS = [ FFilterByBuildFeatures
 	ppc @{
 		nvidia.accelerant  # albook FX Go5200 native modesetting bring-up
+		ati.accelerant     # Rage 128 Ultra - iMac G3
 	}@ # ppc
 	x86,x86_64 @{
 		vesa.accelerant
@@ -373,6 +374,7 @@ SYSTEM_ADD_ONS_DRIVERS_GRAPHICS = [ FFilterByBuildFeatures
 	framebuffer
 	ppc @{
 		nvidia  # GeForce FX Go5200 (NV34) - albook; native modesetting bring-up
+		ati     # Rage 128 Ultra - iMac G3; the driver already supports the chip
 	}@ # ppc
 	x86,x86_64 @{
 		vesa

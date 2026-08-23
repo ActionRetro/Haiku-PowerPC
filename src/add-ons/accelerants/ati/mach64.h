@@ -478,7 +478,10 @@ static inline uint8
 Mach64_GetPLLReg(uint8 index)
 {
 	OUTREG8(CLOCK_CNTL + 1, (index << 2) & PLL_ADDR);
-	return INREG8(CLOCK_CNTL + 2);
+	ATI_IO_BARRIER();
+	uint8 value = INREG8(CLOCK_CNTL + 2);
+	ATI_IO_BARRIER();
+	return value;
 }
 
 
@@ -486,7 +489,9 @@ static inline void
 Mach64_SetPLLReg(uint8 index, uint8 value)
 {
 	OUTREG8(CLOCK_CNTL + 1, ((index << 2) & PLL_ADDR) | PLL_WR_EN);
+	ATI_IO_BARRIER();
 	OUTREG8(CLOCK_CNTL + 2, value);
+	ATI_IO_BARRIER();
 }
 
 

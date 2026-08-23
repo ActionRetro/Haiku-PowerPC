@@ -134,8 +134,10 @@ Rage128_DisplayOverlay(const overlay_window* window,
 	uint32 offset = (uint32)((addr_t)buffer->buffer - si.videoMemAddr);
 
 	OUTREG(R128_OV0_REG_LOAD_CNTL, 1);
-	while (!(INREG(R128_OV0_REG_LOAD_CNTL) & (1 << 3)))
-		;
+	for (int i = 0; i < 1000000; i++) {		// ppc bring-up: bounded
+		if (INREG(R128_OV0_REG_LOAD_CNTL) & (1 << 3))
+			break;
+	}
 
 	OUTREG(R128_OV0_H_INC, horzInc | ((horzInc >> 1) << 16));
 	OUTREG(R128_OV0_STEP_BY, stepBy | (stepBy << 8));
