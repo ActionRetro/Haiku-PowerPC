@@ -114,9 +114,14 @@ StdBinCommands
 	fstrim.cpp
 	: shared be : $(haiku-utils_rsrc) ;
 
+# set_tabby_wallpaper does `new char[size]`, so it needs libsupc++ for
+# operator new[]. It linked without it only by luck: at -mcpu=750 GCC's cost
+# model optimised the allocation away, and the G4 build (-mcpu=7400) does not,
+# so it failed to link there. Do not rely on the optimiser to remove a call
+# that the source genuinely makes.
 StdBinCommands
 	set_tabby_wallpaper.cpp
-	: be ;
+	: be [ TargetLibstdc++ ] [ TargetLibsupc++ ] ;
 
 # standard commands that need libbe.so and libsupc++.so
 StdBinCommands

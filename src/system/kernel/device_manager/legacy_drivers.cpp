@@ -1160,23 +1160,27 @@ try_drivers(DriverEntryList& list)
 		if (entry == NULL)
 			break;
 
+		// Show boot progress on the splash (Tabby) BEFORE attempting the load,
+		// so a driver that hangs while loading/initializing leaves its own name
+		// on screen (diagnostic for real-hardware boot stalls).
+		const char* leaf = strrchr(entry->path, '/');
+		char progress[64];
+		snprintf(progress, sizeof(progress), "Loading %s",
+			leaf != NULL ? leaf + 1 : entry->path);
+		boot_splash_set_status(progress);
+		dprintf("try_drivers: loading %s\n", entry->path);
+
 		image_id image = load_kernel_add_on(entry->path);
 		if (image >= 0) {
 			// check if it's an old-style driver
 			if (legacy_driver_add(entry->path) == B_OK) {
 				// we have a driver
 				dprintf("loaded driver %s\n", entry->path);
-
-				// Show boot progress on the splash (Tabby): the driver leaf name.
-				const char* leaf = strrchr(entry->path, '/');
-				char progress[64];
-				snprintf(progress, sizeof(progress), "Loading %s",
-					leaf != NULL ? leaf + 1 : entry->path);
-				boot_splash_set_status(progress);
 			}
 
 			unload_kernel_add_on(image);
 		}
+		dprintf("try_drivers: done %s\n", entry->path);
 
 		free(entry->path);
 		delete entry;

@@ -57,6 +57,14 @@ rule ArchitectureSetup architecture
 			if $(HAIKU_PPC_TUNE) {
 				archFlags += -mtune=$(HAIKU_PPC_TUNE) ;
 			}
+			# Bisect aid: keep the G4 cost model, drop the vector unit. Lets a
+			# boot failure be attributed to AltiVec itself or to the rest of
+			# the G4 codegen, which is otherwise impossible to separate here -
+			# dingusppc has no G4 machine and implements no AltiVec, so there
+			# is no emulator to test a G4 build on at all.
+			if $(HAIKU_PPC_NOVEC) = 1 {
+				archFlags += -mno-altivec ;
+			}
 		}
 		case arm : archFlags += -march=armv7-a -mfloat-abi=hard ;
 		case arm64 : archFlags += -march=armv8.2-a+fp16 ;
@@ -434,8 +442,17 @@ rule KernelArchitectureSetup architecture
 			# libgcc's out-of-line register save/restore helpers
 			# (_restgpr_*_x), which the loader does not link against - that
 			# link failure is what surfaced this.
-			HAIKU_BOOT_CCFLAGS += -mcpu=750 ;
-			HAIKU_BOOT_C++FLAGS += -mcpu=750 ;
+			# ★ -mtune MUST be reset too. A later -mcpu=750 overrides the
+			# earlier -mcpu=7400 for INSTRUCTION SELECTION, but it does NOT
+			# cancel -mtune=7450 - the scheduler keeps optimising for a G4.
+			# That is not cosmetic: it reorders MMIO accesses in drivers, and
+			# this port has been bitten by device-access ordering twice before
+			# (guarded memory for ATA PIO; the missing index/data barrier in
+			# the nvidia driver). It showed up as "unsupported OHCI revision"
+			# and "iospace offset: 0x0" - a driver reading its own registers
+			# out of order.
+			HAIKU_BOOT_CCFLAGS += -mcpu=750 -mtune=750 ;
+			HAIKU_BOOT_C++FLAGS += -mcpu=750 -mtune=750 ;
 
 			# ★ The kernel is built for the G3 in BOTH images, deliberately.
 			# It is the thing that MANAGES AltiVec state across context
@@ -443,8 +460,11 @@ rule KernelArchitectureSetup architecture
 			# kernel means the G4 image's kernel is identical to the G3 one,
 			# which removes a whole class of "which kernel am I debugging"
 			# confusion. Userland is where the AltiVec win actually is.
-			HAIKU_KERNEL_CCFLAGS += -mcpu=750 ;
-			HAIKU_KERNEL_C++FLAGS += -mcpu=750 ;
+			# Same here, and this covers kernel ADD-ONS as well: KernelRules
+			# compiles them with TARGET_KERNEL_CCFLAGS, so every driver
+			# inherits whatever the kernel gets.
+			HAIKU_KERNEL_CCFLAGS += -mcpu=750 -mtune=750 ;
+			HAIKU_KERNEL_C++FLAGS += -mcpu=750 -mtune=750 ;
 
 			# Build a position independent PPC kernel. We need to be able to
 			# relocate the kernel, since the virtual address space layout at
